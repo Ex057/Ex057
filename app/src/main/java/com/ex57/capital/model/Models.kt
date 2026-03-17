@@ -7,6 +7,18 @@ data class TradingSymbol(
     val derivSymbol: String
 )
 
+enum class PositionSide(val label: String) {
+    LONG("Long"),
+    SHORT("Short")
+}
+
+enum class PositionRecommendation(val label: String) {
+    HOLD("Hold"),
+    SCALE_OUT("Scale Out"),
+    EXIT("Exit"),
+    WAIT("Wait")
+}
+
 enum class ConfirmationMode(
     val label: String,
     val minimumSignalsRequired: Int,
@@ -15,7 +27,8 @@ enum class ConfirmationMode(
 ) {
     CONSERVATIVE("Conservative", 5, "Strong trend only", "Lower frequency, tighter filtering"),
     MODERATE("Moderate", 4, "Balanced continuation", "Balanced risk and opportunity"),
-    AGGRESSIVE("Aggressive", 3, "Early momentum", "More setups, higher noise")
+    AGGRESSIVE("Aggressive", 3, "Early momentum", "More setups, higher noise"),
+    LENIENT("Lenient", 3, "Three credible confirmations", "Earliest entries, loosest filtering")
 }
 
 data class Confirmation(
@@ -30,6 +43,13 @@ data class MarketCandle(
     val high: Double,
     val low: Double,
     val close: Double
+)
+
+data class AnalysisTimeframePlan(
+    val macro: String,
+    val structure: String,
+    val setup: String,
+    val trigger: String
 )
 
 enum class TradeBias(val label: String) {
@@ -68,7 +88,16 @@ data class AnalysisResult(
     val decision: TradeDecision,
     val evidence: EvidenceSnapshot,
     val setupType: SetupType,
-    val nextTrigger: String
+    val nextTrigger: String,
+    val mtfaStatus: MtfaStatus? = null,
+    val positionGuidance: PositionGuidance? = null
+)
+
+data class MtfaStatus(
+    val macro: String,
+    val structure: String,
+    val setup: String,
+    val trigger: String
 )
 
 data class TradeSetup(
@@ -90,4 +119,44 @@ data class EvidenceSnapshot(
     val confidenceBadge: String,
     val robustness: String,
     val lastOutcomes: List<String>
+)
+
+data class TradePosition(
+    val id: String,
+    val symbolCode: String,
+    val derivSymbol: String,
+    val timeframe: String,
+    val side: PositionSide,
+    val entryPrice: Double,
+    val stopLoss: Double?,
+    val takeProfit: Double?,
+    val openedAtEpochMillis: Long,
+    val setupType: SetupType,
+    val rationale: String,
+    val confidence: Int
+)
+
+data class ClosedTradeRecord(
+    val id: String,
+    val symbolCode: String,
+    val timeframe: String,
+    val side: PositionSide,
+    val entryPrice: Double,
+    val exitPrice: Double,
+    val stopLoss: Double?,
+    val takeProfit: Double?,
+    val openedAtEpochMillis: Long,
+    val closedAtEpochMillis: Long,
+    val outcomeLabel: String,
+    val pnlPercent: Double,
+    val rationale: String
+)
+
+data class PositionGuidance(
+    val recommendation: PositionRecommendation,
+    val headline: String,
+    val detail: String,
+    val unrealizedPercent: Double,
+    val distanceToStopPercent: Double?,
+    val distanceToTargetPercent: Double?
 )

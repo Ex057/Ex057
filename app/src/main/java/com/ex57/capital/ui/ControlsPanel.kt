@@ -30,14 +30,41 @@ import com.ex57.capital.model.TradingSymbol
 
 val SupportedSymbols = listOf(
     TradingSymbol("EURUSD", "Euro / US Dollar", "Forex", "frxEURUSD"),
+    TradingSymbol("AUDUSD", "Australian Dollar / US Dollar", "Forex", "frxAUDUSD"),
+    TradingSymbol("EURGBP", "Euro / British Pound", "Forex", "frxEURGBP"),
     TradingSymbol("GBPUSD", "British Pound / US Dollar", "Forex", "frxGBPUSD"),
+    TradingSymbol("NZDUSD", "New Zealand Dollar / US Dollar", "Forex", "frxNZDUSD"),
+    TradingSymbol("USDCAD", "US Dollar / Canadian Dollar", "Forex", "frxUSDCAD"),
+    TradingSymbol("USDCHF", "US Dollar / Swiss Franc", "Forex", "frxUSDCHF"),
     TradingSymbol("USDJPY", "US Dollar / Japanese Yen", "Forex", "frxUSDJPY"),
     TradingSymbol("BTCUSD", "Bitcoin / US Dollar", "Crypto", "cryBTCUSD"),
+    TradingSymbol("ETHUSD", "Ethereum / US Dollar", "Crypto", "cryETHUSD"),
     TradingSymbol("XAUUSD", "Gold / US Dollar", "Commodities", "frxXAUUSD"),
-    TradingSymbol("VOL50", "Volatility 50 Index", "Synthetic", "R_50")
+    TradingSymbol("VOL10", "Volatility 10 Index", "Synthetic", "R_10"),
+    TradingSymbol("VOL25", "Volatility 25 Index", "Synthetic", "R_25"),
+    TradingSymbol("VOL50", "Volatility 50 Index", "Synthetic", "R_50"),
+    TradingSymbol("VOL75", "Volatility 75 Index", "Synthetic", "R_75"),
+    TradingSymbol("VOL100", "Volatility 100 Index", "Synthetic", "R_100"),
+    TradingSymbol("VOL10_1S", "Volatility 10 (1s) Index", "Synthetic", "1HZ10V"),
+    TradingSymbol("VOL25_1S", "Volatility 25 (1s) Index", "Synthetic", "1HZ25V"),
+    TradingSymbol("VOL50_1S", "Volatility 50 (1s) Index", "Synthetic", "1HZ50V"),
+    TradingSymbol("VOL75_1S", "Volatility 75 (1s) Index", "Synthetic", "1HZ75V"),
+    TradingSymbol("VOL100_1S", "Volatility 100 (1s) Index", "Synthetic", "1HZ100V")
+    ,
+    TradingSymbol("BOOM300", "Boom 300 Index", "Crash/Boom", "BOOM300N"),
+    TradingSymbol("BOOM500", "Boom 500 Index", "Crash/Boom", "BOOM500"),
+    TradingSymbol("BOOM600", "Boom 600 Index", "Crash/Boom", "BOOM600"),
+    TradingSymbol("BOOM900", "Boom 900 Index", "Crash/Boom", "BOOM900"),
+    TradingSymbol("BOOM1000", "Boom 1000 Index", "Crash/Boom", "BOOM1000"),
+    TradingSymbol("CRASH300", "Crash 300 Index", "Crash/Boom", "CRASH300N"),
+    TradingSymbol("CRASH500", "Crash 500 Index", "Crash/Boom", "CRASH500"),
+    TradingSymbol("CRASH600", "Crash 600 Index", "Crash/Boom", "CRASH600"),
+    TradingSymbol("CRASH900", "Crash 900 Index", "Crash/Boom", "CRASH900"),
+    TradingSymbol("CRASH1000", "Crash 1000 Index", "Crash/Boom", "CRASH1000")
 )
 
-val SupportedTimeframes = listOf("1m", "5m", "15m", "1h", "4h", "1d")
+val SupportedTimeframes = listOf("1m", "5m", "15m", "30m", "1h", "2h", "4h", "8h", "1d")
+val SupportedCategories = SupportedSymbols.map { it.category }.distinct()
 
 @Composable
 fun ControlsPanel(
@@ -50,6 +77,11 @@ fun ControlsPanel(
     onConnect: () -> Unit,
     onAnalyze: () -> Unit
 ) {
+    val selectedCategory = selectedSymbol.category
+    val symbolsInCategory = remember(selectedCategory) {
+        SupportedSymbols.filter { it.category == selectedCategory }
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -62,14 +94,27 @@ fun ControlsPanel(
             Spacer(modifier = Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                 DropdownField(
-                    label = "Symbol",
-                    value = selectedSymbol.code,
-                    options = SupportedSymbols.map { it.code },
-                    onSelect = { code ->
-                        onSymbolChange(SupportedSymbols.first { it.code == code })
+                    label = "Category",
+                    value = selectedCategory,
+                    options = SupportedCategories,
+                    onSelect = { category ->
+                        val firstSymbol = SupportedSymbols.first { it.category == category }
+                        onSymbolChange(firstSymbol)
                     },
                     modifier = Modifier.weight(1f)
                 )
+                DropdownField(
+                    label = "Symbol",
+                    value = selectedSymbol.code,
+                    options = symbolsInCategory.map { it.code },
+                    onSelect = { code ->
+                        onSymbolChange(symbolsInCategory.first { it.code == code })
+                    },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                 DropdownField(
                     label = "Timeframe",
                     value = selectedTimeframe,

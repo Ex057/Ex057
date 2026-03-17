@@ -14,7 +14,7 @@ import java.util.concurrent.TimeUnit
 
 class DerivWebSocketClient(
     private val appId: String = "1089"
-) {
+) : MarketDataSource {
     private val maxStoredTicks = 600
 
     private val client = OkHttpClient.Builder()
@@ -23,15 +23,16 @@ class DerivWebSocketClient(
 
     private var webSocket: WebSocket? = null
 
-    val priceFlow = MutableStateFlow<Double?>(null)
-    val priceHistoryFlow = MutableStateFlow<List<Double>>(emptyList())
-    val candleHistoryFlow = MutableStateFlow<List<MarketCandle>>(emptyList())
-    val dataQualityFlow = MutableStateFlow(DataQuality.ESTIMATED)
-    val statusFlow = MutableStateFlow("Disconnected")
-    val symbolFlow = MutableStateFlow<String?>(null)
-    val timeframeFlow = MutableStateFlow("15m")
+    override val priceFlow = MutableStateFlow<Double?>(null)
+    override val priceHistoryFlow = MutableStateFlow<List<Double>>(emptyList())
+    override val candleHistoryFlow = MutableStateFlow<List<MarketCandle>>(emptyList())
+    override val candleStackFlow = MutableStateFlow<Map<String, List<MarketCandle>>>(emptyMap())
+    override val dataQualityFlow = MutableStateFlow(DataQuality.ESTIMATED)
+    override val statusFlow = MutableStateFlow("Disconnected")
+    override val symbolFlow = MutableStateFlow<String?>(null)
+    override val timeframeFlow = MutableStateFlow("15m")
 
-    fun connect(symbol: String, timeframe: String) {
+    override fun connect(symbol: String, timeframe: String) {
         disconnect()
         statusFlow.value = "Connecting"
         symbolFlow.value = symbol
@@ -51,7 +52,7 @@ class DerivWebSocketClient(
                     )
                 )
                 webSocket.send(subscribeMessage.toString())
-                sendCandleHistoryRequest(webSocket, symbol, timeframe)
+                requestTimeframeStack(webSocket, symbol, timeframe)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -62,7 +63,15 @@ class DerivWebSocketClient(
                         return
                     }
                     if (json.has("candles")) {
-                        candleHistoryFlow.value = parseCandles(json.getJSONArray("candles"))
+                        val parsedCandles = parseCandles(json.getJSONArray("candles"))
+                        val granularity = json.optJSONObject("echo_req")?.optInt("granularity")
+                        val candleTimeframe = granularity?.let(::secondsToTimeframe) ?: timeframeFlow.value
+                        candleStackFlow.value = candleStackFlow.value.toMutableMap().apply {
+                            put(candleTimeframe, parsedCandles)
+                        }
+                        if (candleTimeframe == timeframeFlow.value) {
+                            candleHistoryFlow.value = parsedCandles
+                        }
                         dataQualityFlow.value = DataQuality.EXCHANGE_OHLC
                         return
                     }
@@ -88,21 +97,32 @@ class DerivWebSocketClient(
         })
     }
 
-    fun refreshCandles(symbol: String, timeframe: String) {
+    override fun refreshCandles(symbol: String, timeframe: String) {
         timeframeFlow.value = timeframe
         webSocket?.let {
-            sendCandleHistoryRequest(it, symbol, timeframe)
+            requestTimeframeStack(it, symbol, timeframe)
         }
     }
 
-    fun disconnect() {
+    override fun disconnect() {
         webSocket?.close(1000, "Client closed")
         webSocket = null
         statusFlow.value = "Disconnected"
         priceFlow.value = null
         priceHistoryFlow.value = emptyList()
         candleHistoryFlow.value = emptyList()
+        candleStackFlow.value = emptyMap()
         dataQualityFlow.value = DataQuality.ESTIMATED
+    }
+
+    private fun requestTimeframeStack(
+        webSocket: WebSocket,
+        symbol: String,
+        timeframe: String
+    ) {
+        stackTimeframesFor(timeframe).forEach { requestTimeframe ->
+            sendCandleHistoryRequest(webSocket, symbol, requestTimeframe)
+        }
     }
 
     private fun sendCandleHistoryRequest(
@@ -145,10 +165,43 @@ class DerivWebSocketClient(
             "1m" -> 60
             "5m" -> 300
             "15m" -> 900
+            "30m" -> 1800
             "1h" -> 3600
+            "2h" -> 7200
             "4h" -> 14400
+            "8h" -> 28800
             "1d" -> 86400
             else -> 900
         }
+    }
+
+    private fun secondsToTimeframe(seconds: Int): String {
+        return when (seconds) {
+            60 -> "1m"
+            300 -> "5m"
+            900 -> "15m"
+            1800 -> "30m"
+            3600 -> "1h"
+            7200 -> "2h"
+            14400 -> "4h"
+            28800 -> "8h"
+            86400 -> "1d"
+            else -> timeframeFlow.value
+        }
+    }
+
+    private fun stackTimeframesFor(timeframe: String): List<String> {
+        return when (timeframe) {
+            "1m" -> listOf("15m", "5m", "1m")
+            "5m" -> listOf("1h", "15m", "5m", "1m")
+            "15m" -> listOf("4h", "1h", "15m", "5m")
+            "30m" -> listOf("4h", "1h", "30m", "15m")
+            "1h" -> listOf("1d", "4h", "1h", "15m")
+            "2h" -> listOf("1d", "4h", "2h", "30m")
+            "4h" -> listOf("1d", "8h", "4h", "1h")
+            "8h" -> listOf("1d", "8h", "8h", "2h")
+            "1d" -> listOf("1d", "8h", "1d", "4h")
+            else -> listOf(timeframe)
+        }.distinct()
     }
 }
