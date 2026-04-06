@@ -13,6 +13,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -59,7 +60,10 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -69,6 +73,8 @@ import com.ex57.capital.model.AnalysisResult
 import com.ex57.capital.model.ClosedTradeRecord
 import com.ex57.capital.model.ConfirmationMode
 import com.ex57.capital.model.DataQuality
+import com.ex57.capital.model.FeedPhase
+import com.ex57.capital.model.FeedState
 import com.ex57.capital.model.MarketCandle
 import com.ex57.capital.model.PositionRecommendation
 import com.ex57.capital.model.PositionSide
@@ -184,9 +190,11 @@ fun EX57App() {
     val candleHistory by priceViewModel.candleHistory.collectAsState()
     val candleStack by priceViewModel.candleStack.collectAsState()
     val dataQuality by priceViewModel.dataQuality.collectAsState()
+    val feedState by priceViewModel.feedState.collectAsState()
     val connectedFeed by priceViewModel.symbol.collectAsState()
     val openPositions by priceViewModel.openPositions.collectAsState()
     val closedTrades by priceViewModel.closedTrades.collectAsState()
+    val demoBalance by priceViewModel.demoBalance.collectAsState()
     val darkTheme = androidx.compose.foundation.isSystemInDarkTheme()
     var selectedTab by remember { mutableStateOf(AppTab.HOME) }
     var selectedSymbol by remember { mutableStateOf(SupportedSymbols.first()) }
@@ -348,6 +356,9 @@ fun EX57App() {
                                     timeframe = selectedTimeframe,
                                     analysisResult = result,
                                     executionPrice = livePrice
+                                        ?: result.tradeSetup.entry
+                                        ?: candleHistory.lastOrNull()?.close
+                                        ?: recentPrices.lastOrNull()
                                 )
                                 runAnalysis(recordAlert = false, source = "Position")
                             }
@@ -369,7 +380,8 @@ fun EX57App() {
                             runAnalysis(recordAlert = true, source = "Manual")
                         },
                         candles = candleHistory,
-                        dataQuality = dataQuality
+                        dataQuality = dataQuality,
+                        feedState = feedState
                     )
                     AppTab.MARKETS -> MarketsPanel(
                         selectedSymbol = selectedSymbol,
@@ -422,7 +434,21 @@ fun EX57App() {
                         analysisResult = analysisResult,
                         dataQuality = dataQuality,
                         selectedSymbol = selectedSymbol,
-                        closedTrades = closedTrades
+                        closedTrades = closedTrades,
+                        openPositions = openPositions,
+                        demoBalance = demoBalance,
+                        livePrice = livePrice,
+                        connectedFeed = connectedFeed,
+                        resolveLatestKnownPrice = { position ->
+                            priceViewModel.latestKnownPrice(position.derivSymbol, position.timeframe)
+                        },
+                        onTrackPosition = { position ->
+                            selectedSymbol = SupportedSymbols.firstOrNull { it.derivSymbol == position.derivSymbol }
+                                ?: selectedSymbol
+                            selectedTimeframe = position.timeframe
+                            selectedTab = AppTab.BACKTEST
+                            priceViewModel.connect(position.derivSymbol, position.timeframe)
+                        }
                     )
                     AppTab.SETTINGS -> SettingsPanel(
                         selectedMode = selectedMode,
@@ -445,6 +471,7 @@ fun EX57App() {
 
 @Composable
 private fun FloatingHeader(tab: AppTab) {
+    val fontScale = LocalDensity.current.fontScale
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -453,7 +480,9 @@ private fun FloatingHeader(tab: AppTab) {
     ) {
         Text(
             text = tab.title,
-            style = MaterialTheme.typography.headlineLarge,
+            fontSize = if (fontScale > 1.12f) 28.sp else 34.sp,
+            lineHeight = if (fontScale > 1.12f) 31.sp else 38.sp,
+            fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onBackground
         )
         Spacer(modifier = Modifier.height(4.dp))
@@ -472,6 +501,7 @@ private fun HomeDashboard(
     recentPrices: List<Double>,
     candles: List<MarketCandle>,
     dataQuality: DataQuality,
+    feedState: FeedState,
     selectedSymbol: TradingSymbol,
     onSymbolChange: (TradingSymbol) -> Unit,
     selectedTimeframe: String,
@@ -503,6 +533,7 @@ private fun HomeDashboard(
         recentPrices = recentPrices,
         candles = candles,
         dataQuality = dataQuality,
+        feedState = feedState,
         selectedSymbol = selectedSymbol,
         selectedTimeframe = selectedTimeframe,
         selectedMode = selectedMode,
@@ -519,6 +550,27 @@ private fun HomeDashboard(
             analysisResult = analysisResult,
             onCloseTrade = onCloseTrade
         )
+    }
+}
+
+@Composable
+private fun CompactMetricCard(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+            contentColor = MaterialTheme.colorScheme.onSurface
+        )
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Text(label, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(value, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+        }
     }
 }
 
@@ -572,6 +624,7 @@ private fun SignalCard(
     recentPrices: List<Double>,
     candles: List<MarketCandle>,
     dataQuality: DataQuality,
+    feedState: FeedState,
     selectedSymbol: TradingSymbol,
     selectedTimeframe: String,
     selectedMode: ConfirmationMode,
@@ -581,7 +634,6 @@ private fun SignalCard(
     onCloseTrade: () -> Unit = {}
 ) {
     val price by priceViewModel.price.collectAsState()
-    val status by priceViewModel.status.collectAsState()
     val symbol by priceViewModel.symbol.collectAsState()
     val biasColor = when (analysisResult?.bias) {
         TradeBias.BULLISH -> MaterialTheme.colorScheme.primary
@@ -599,7 +651,15 @@ private fun SignalCard(
         Column(modifier = Modifier.padding(16.dp)) {
             Text("Signal Console", fontSize = 18.sp, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(8.dp))
-            Text("Status: $status")
+            Text(
+                text = "Status: ${feedState.message}",
+                color = when (feedState.phase) {
+                    FeedPhase.LIVE -> MaterialTheme.colorScheme.primary
+                    FeedPhase.STALE, FeedPhase.ERROR -> MaterialTheme.colorScheme.error
+                    FeedPhase.RECONNECTING, FeedPhase.WAITING_FOR_DATA -> MaterialTheme.colorScheme.secondary
+                    else -> MaterialTheme.colorScheme.onSurface
+                }
+            )
             Spacer(modifier = Modifier.height(6.dp))
             Text("Feed: ${symbol ?: "-"}")
             Spacer(modifier = Modifier.height(6.dp))
@@ -610,8 +670,17 @@ private fun SignalCard(
             Text("Samples: ${recentPrices.size}/240")
             Spacer(modifier = Modifier.height(6.dp))
             Text(
+                "Last tick: ${feedState.lastTickEpochMillis?.let(::formatTimestampLabel) ?: "No live tick yet"}",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
                 "Data: ${dataQuality.label} ${if (dataQuality == DataQuality.EXCHANGE_OHLC) "OK" else "WARN"}",
-                color = if (dataQuality == DataQuality.EXCHANGE_OHLC) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary
+                color = when (dataQuality) {
+                    DataQuality.EXCHANGE_OHLC -> MaterialTheme.colorScheme.primary
+                    DataQuality.CACHED -> MaterialTheme.colorScheme.secondary
+                    DataQuality.ESTIMATED -> MaterialTheme.colorScheme.secondary
+                }
             )
             Spacer(modifier = Modifier.height(12.dp))
 
@@ -825,7 +894,6 @@ private fun ChartCard(
     timeframe: String,
     analysisResult: AnalysisResult
 ) {
-    var expanded by remember(analysisResult, timeframe) { mutableStateOf(false) }
     val chartCandles = remember(candles, prices, timeframe) {
         if (candles.isNotEmpty()) {
             candles.takeLast(50).map {
@@ -841,6 +909,9 @@ private fun ChartCard(
         }
     }
     val overlays = remember(chartCandles) { buildChartOverlayState(chartCandles) }
+    var showFastTrend by remember(timeframe) { mutableStateOf(true) }
+    var showSlowTrend by remember(timeframe) { mutableStateOf(true) }
+    var showBiasLine by remember(timeframe) { mutableStateOf(true) }
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -870,49 +941,41 @@ private fun ChartCard(
                     candles = chartCandles,
                     overlays = overlays,
                     analysisResult = analysisResult,
+                    showFastTrend = showFastTrend,
+                    showSlowTrend = showSlowTrend,
+                    showBiasLine = showBiasLine,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(220.dp)
                 )
                 Spacer(modifier = Modifier.height(10.dp))
                 Text(
-                    "Overlays: fast trend, slow trend, bias line, and trade levels.",
+                    "Tap the legend to show or hide each overlay.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 12.sp
                 )
                 Spacer(modifier = Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    TrendBadge("Fast", MaterialTheme.colorScheme.secondary, Modifier.weight(1f))
-                    TrendBadge("Slow", MaterialTheme.colorScheme.tertiary, Modifier.weight(1f))
-                    TrendBadge("Bias", MaterialTheme.colorScheme.primary, Modifier.weight(1f))
-                }
-                Spacer(modifier = Modifier.height(12.dp))
-                OutlinedButton(
-                    onClick = { expanded = !expanded },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(if (expanded) "Hide Trade Map" else "View More On Chart")
-                }
-                if (expanded) {
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text("Trade Map", fontWeight = FontWeight.Medium)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text("Entry: ${analysisResult.tradeSetup.entry?.let(::formatDisplayPrice) ?: "-"}")
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text("Stop Loss: ${analysisResult.tradeSetup.stopLoss?.let(::formatDisplayPrice) ?: "-"}")
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text("Take Profit: ${analysisResult.tradeSetup.takeProfit?.let(::formatDisplayPrice) ?: "-"}")
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text("Risk/Reward: ${analysisResult.tradeSetup.riskReward}")
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        "Trigger: ${analysisResult.nextTrigger}",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    TrendBadge(
+                        label = "Fast",
+                        color = MaterialTheme.colorScheme.secondary,
+                        enabled = showFastTrend,
+                        modifier = Modifier.weight(1f),
+                        onClick = { showFastTrend = !showFastTrend }
                     )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        analysisResult.executionPlan,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    TrendBadge(
+                        label = "Slow",
+                        color = MaterialTheme.colorScheme.tertiary,
+                        enabled = showSlowTrend,
+                        modifier = Modifier.weight(1f),
+                        onClick = { showSlowTrend = !showSlowTrend }
+                    )
+                    TrendBadge(
+                        label = "Bias",
+                        color = MaterialTheme.colorScheme.primary,
+                        enabled = showBiasLine,
+                        modifier = Modifier.weight(1f),
+                        onClick = { showBiasLine = !showBiasLine }
                     )
                 }
             }
@@ -924,17 +987,19 @@ private fun ChartCard(
 private fun TrendBadge(
     label: String,
     color: Color,
-    modifier: Modifier = Modifier
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
 ) {
-    Card(
+    androidx.compose.material3.Surface(
+        onClick = onClick,
         modifier = modifier,
-        colors = CardDefaults.cardColors(
-            containerColor = color.copy(alpha = 0.14f),
-            contentColor = color
-        )
+        shape = RoundedCornerShape(999.dp),
+        color = if (enabled) color.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        contentColor = if (enabled) color else MaterialTheme.colorScheme.onSurfaceVariant
     ) {
         Text(
-            text = label,
+            text = if (enabled) label else "$label Off",
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
             fontSize = 12.sp,
             fontWeight = FontWeight.Medium
@@ -1011,6 +1076,12 @@ private fun TradePlanCard(
                 "Trigger: ${analysisResult.nextTrigger}",
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                "This opens a demo trade only. It does not send a live broker order.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp
+            )
             Spacer(modifier = Modifier.height(12.dp))
             if (openPosition == null) {
                 Button(
@@ -1019,7 +1090,7 @@ private fun TradePlanCard(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
-                        if (analysisResult.bias == TradeBias.BEARISH) "Open Short Position" else "Open Long Position"
+                        if (analysisResult.bias == TradeBias.BEARISH) "Start Demo Short" else "Start Demo Long"
                     )
                 }
             } else {
@@ -1027,7 +1098,7 @@ private fun TradePlanCard(
                     onClick = onCloseTrade,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Close Active Position")
+                    Text("Close Demo Position")
                 }
             }
         }
@@ -1072,7 +1143,7 @@ private fun ActivePositionCard(
             Text("Target: ${position.takeProfit?.let(::formatDisplayPrice) ?: "-"}")
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                "Unrealized: ${pnlPercent?.let(::formatPercentSigned) ?: "-"}",
+                "Unrealized: ${positionPnlUsd(position, livePrice)?.let(::formatCurrencySigned) ?: "-"} ${pnlPercent?.let { "(${formatPercentSigned(it)})" } ?: ""}",
                 color = when {
                     pnlPercent == null -> MaterialTheme.colorScheme.onSurfaceVariant
                     pnlPercent >= 0 -> MaterialTheme.colorScheme.primary
@@ -1090,7 +1161,7 @@ private fun ActivePositionCard(
                 onClick = onCloseTrade,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Close Position")
+                Text("Close Demo Position")
             }
         }
     }
@@ -1101,6 +1172,9 @@ private fun PriceChart(
     candles: List<PriceCandle>,
     overlays: ChartOverlayState,
     analysisResult: AnalysisResult,
+    showFastTrend: Boolean,
+    showSlowTrend: Boolean,
+    showBiasLine: Boolean,
     modifier: Modifier = Modifier
 ) {
     val outlineColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
@@ -1185,9 +1259,15 @@ private fun PriceChart(
             )
         }
 
-        drawSeries(overlays.fastTrend, fastLineColor, 3f)
-        drawSeries(overlays.slowTrend, slowLineColor, 3.4f)
-        drawSeries(overlays.biasLine, biasLineColor, 2.6f)
+        if (showFastTrend) {
+            drawSeries(overlays.fastTrend, fastLineColor, 3f)
+        }
+        if (showSlowTrend) {
+            drawSeries(overlays.slowTrend, slowLineColor, 3.4f)
+        }
+        if (showBiasLine) {
+            drawSeries(overlays.biasLine, biasLineColor, 2.6f)
+        }
         drawLevel(analysisResult.tradeSetup.entry, entryLineColor)
         drawLevel(analysisResult.tradeSetup.stopLoss, stopLineColor)
         drawLevel(analysisResult.tradeSetup.takeProfit, targetLineColor)
@@ -1391,16 +1471,152 @@ private fun AlertsPanel(
 }
 
 @Composable
+private fun DemoTerminalPanel(
+    openPositions: List<TradePosition>,
+    closedTrades: List<ClosedTradeRecord>,
+    demoBalance: Double,
+    livePrice: Double?,
+    connectedFeed: String?,
+    resolveLatestKnownPrice: (TradePosition) -> Double?,
+    onTrackPosition: (TradePosition) -> Unit
+) {
+    val openPnlUsd = openPositions.sumOf { position ->
+        val currentPrice = if (position.derivSymbol == connectedFeed) {
+            livePrice ?: resolveLatestKnownPrice(position)
+        } else {
+            resolveLatestKnownPrice(position)
+        }
+        positionPnlUsd(position, currentPrice) ?: 0.0
+    }
+    val equity = demoBalance + openPnlUsd
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("Demo Terminal", fontWeight = FontWeight.SemiBold)
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                "Balance: ${formatCurrency(demoBalance)}",
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Medium
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                "Equity: ${formatCurrency(equity)}",
+                color = if (openPnlUsd >= 0.0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                fontWeight = FontWeight.Medium
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                "Open P/L: ${formatCurrencySigned(openPnlUsd)}",
+                color = if (openPnlUsd >= 0.0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text("Open positions: ${openPositions.size}")
+            Spacer(modifier = Modifier.height(4.dp))
+            Text("Closed positions: ${closedTrades.size}")
+            Spacer(modifier = Modifier.height(8.dp))
+            if (openPositions.isEmpty()) {
+                Text(
+                    "No active demo positions yet. Analyze a setup on Home, then open a demo trade from the Trade Plan.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                openPositions.forEach { position ->
+                    val currentPrice = if (position.derivSymbol == connectedFeed) {
+                        livePrice ?: resolveLatestKnownPrice(position)
+                    } else {
+                        resolveLatestKnownPrice(position)
+                    }
+                    val pnlPercent = positionPnlPercent(position, currentPrice)
+                    val pnlUsd = positionPnlUsd(position, currentPrice)
+                    Text(
+                        "${position.symbolCode} • ${position.side.label} • ${position.timeframe}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "Stake: ${formatCurrency(position.stakeUsd)}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 13.sp
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        "Entry: ${formatDisplayPrice(position.entryPrice)}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 13.sp
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        if (pnlUsd == null || pnlPercent == null) {
+                            if (currentPrice == null) {
+                                "P/L: connect this pair to resume motion"
+                            } else {
+                                "P/L: waiting for live update"
+                            }
+                        } else {
+                            "P/L: ${formatCurrencySigned(pnlUsd)}  (${formatPercentSigned(pnlPercent)})"
+                        },
+                        color = when {
+                            pnlUsd == null -> MaterialTheme.colorScheme.onSurfaceVariant
+                            pnlUsd >= 0.0 -> MaterialTheme.colorScheme.primary
+                            else -> MaterialTheme.colorScheme.error
+                        },
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        "Live: ${currentPrice?.let(::formatDisplayPrice) ?: "-"}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        "Opened: ${formatTimestamp(position.openedAtEpochMillis)}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = { onTrackPosition(position) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (position.derivSymbol == connectedFeed) "Tracking Live" else "Track Live ${position.symbolCode}")
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun BacktestPanel(
     analysisResult: AnalysisResult?,
     dataQuality: DataQuality,
     selectedSymbol: TradingSymbol,
-    closedTrades: List<ClosedTradeRecord>
+    closedTrades: List<ClosedTradeRecord>,
+    openPositions: List<TradePosition>,
+    demoBalance: Double,
+    livePrice: Double?,
+    connectedFeed: String?,
+    resolveLatestKnownPrice: (TradePosition) -> Double?,
+    onTrackPosition: (TradePosition) -> Unit
 ) {
     val symbolHistory = closedTrades.filter { it.symbolCode == selectedSymbol.code }
     val winRate = if (symbolHistory.isEmpty()) 0 else ((symbolHistory.count { it.pnlPercent >= 0.0 } * 100.0) / symbolHistory.size).toInt()
     val averagePnl = if (symbolHistory.isEmpty()) 0.0 else symbolHistory.map { it.pnlPercent }.average()
 
+    DemoTerminalPanel(
+        openPositions = openPositions,
+        closedTrades = closedTrades,
+        demoBalance = demoBalance,
+        livePrice = livePrice,
+        connectedFeed = connectedFeed,
+        resolveLatestKnownPrice = resolveLatestKnownPrice,
+        onTrackPosition = onTrackPosition
+    )
+    Spacer(modifier = Modifier.height(16.dp))
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text("Backtest Snapshot", fontWeight = FontWeight.SemiBold)
@@ -1470,7 +1686,7 @@ private fun BacktestPanel(
                 Spacer(modifier = Modifier.height(8.dp))
                 symbolHistory.take(5).forEach { trade ->
                     Text(
-                        "${trade.outcomeLabel} • ${formatPercentSigned(trade.pnlPercent)} • ${formatTimestamp(trade.closedAtEpochMillis)}",
+                        "${trade.outcomeLabel} • ${formatCurrencySigned(trade.pnlUsd)} • ${formatPercentSigned(trade.pnlPercent)} • ${formatTimestamp(trade.closedAtEpochMillis)}",
                         color = if (trade.pnlPercent >= 0.0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
                         fontSize = 13.sp
                     )
@@ -1482,6 +1698,25 @@ private fun BacktestPanel(
 }
 
 private fun formatDisplayPrice(value: Double): String = "%.5f".format(value)
+
+private fun positionPnlPercent(position: TradePosition, currentPrice: Double?): Double? {
+    currentPrice ?: return null
+    return when (position.side) {
+        PositionSide.LONG -> ((currentPrice - position.entryPrice) / position.entryPrice) * 100.0
+        PositionSide.SHORT -> ((position.entryPrice - currentPrice) / position.entryPrice) * 100.0
+    }
+}
+
+private fun positionPnlUsd(position: TradePosition, currentPrice: Double?): Double? {
+    val pnlPercent = positionPnlPercent(position, currentPrice) ?: return null
+    return position.stakeUsd * (pnlPercent / 100.0)
+}
+
+private fun formatCurrency(value: Double): String = "$${"%.2f".format(value)}"
+
+private fun formatCurrencySigned(value: Double): String {
+    return if (value >= 0.0) "+$${"%.2f".format(value)}" else "-$${"%.2f".format(kotlin.math.abs(value))}"
+}
 
 private fun formatPercentSigned(value: Double): String {
     return if (value >= 0.0) "+${"%.2f".format(value)}%" else "${"%.2f".format(value)}%"
@@ -1510,6 +1745,8 @@ private fun SettingsPanel(
     onDisconnectFeed: () -> Unit,
     connectedFeed: String?
 ) {
+    val compactLayout = LocalDensity.current.fontScale > 1.08f
+    val modeRows = remember { ConfirmationMode.values().toList().chunked(2) }
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text("Execution Guardrails", fontWeight = FontWeight.SemiBold)
@@ -1534,7 +1771,8 @@ private fun SettingsPanel(
                     Text(
                         "Refresh the signal model as new ticks arrive for the tracked symbol.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 13.sp
+                        fontSize = if (compactLayout) 12.sp else 13.sp,
+                        lineHeight = if (compactLayout) 16.sp else 18.sp
                     )
                 }
                 Switch(checked = autoAnalyzeLiveFeed, onCheckedChange = onAutoAnalyzeChange)
@@ -1550,7 +1788,8 @@ private fun SettingsPanel(
                     Text(
                         "Store non-neutral signals so you can review what the engine approved.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 13.sp
+                        fontSize = if (compactLayout) 12.sp else 13.sp,
+                        lineHeight = if (compactLayout) 16.sp else 18.sp
                     )
                 }
                 Switch(checked = keepAlertHistory, onCheckedChange = onKeepAlertHistoryChange)
@@ -1558,14 +1797,31 @@ private fun SettingsPanel(
             Spacer(modifier = Modifier.height(16.dp))
             Text("Mode Presets", fontWeight = FontWeight.Medium)
             Spacer(modifier = Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                ConfirmationMode.values().forEach { mode ->
-                    OutlinedButton(
-                        onClick = { onModeChange(mode) },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text(if (mode == selectedMode) "${mode.label} *" else mode.label)
+            modeRows.forEachIndexed { index, rowModes ->
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    rowModes.forEach { mode ->
+                        OutlinedButton(
+                            onClick = { onModeChange(mode) },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 12.dp)
+                        ) {
+                            Text(
+                                text = if (mode == selectedMode) "${mode.label} *" else mode.label,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                fontSize = 13.sp
+                            )
+                        }
                     }
+                    if (rowModes.size == 1) {
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
+                }
+                if (index != modeRows.lastIndex) {
+                    Spacer(modifier = Modifier.height(8.dp))
                 }
             }
             Spacer(modifier = Modifier.height(16.dp))
@@ -1587,11 +1843,12 @@ private fun FloatingBottomNav(
     onTabSelected: (AppTab) -> Unit,
     darkTheme: Boolean
 ) {
+    val compactLabels = LocalDensity.current.fontScale > 1.15f
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 16.dp),
+            .padding(horizontal = 16.dp, vertical = if (compactLabels) 10.dp else 16.dp),
         contentAlignment = Alignment.Center
     ) {
         Card(
@@ -1609,7 +1866,7 @@ private fun FloatingBottomNav(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 10.dp),
+                    .padding(horizontal = if (compactLabels) 4.dp else 8.dp, vertical = if (compactLabels) 6.dp else 10.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -1617,6 +1874,7 @@ private fun FloatingBottomNav(
                     BottomNavItem(
                         tab = tab,
                         selected = tab == selectedTab,
+                        compactLabels = compactLabels,
                         onClick = { onTabSelected(tab) }
                     )
                 }
@@ -1629,10 +1887,11 @@ private fun FloatingBottomNav(
 private fun BottomNavItem(
     tab: AppTab,
     selected: Boolean,
+    compactLabels: Boolean,
     onClick: () -> Unit
 ) {
     val scale by animateFloatAsState(
-        targetValue = if (selected) 1.05f else 1f,
+        targetValue = if (selected) 1.02f else 1f,
         animationSpec = spring(),
         label = "tabScale"
     )
@@ -1644,7 +1903,10 @@ private fun BottomNavItem(
         shape = RoundedCornerShape(22.dp)
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            modifier = Modifier.padding(
+                horizontal = if (compactLabels) 10.dp else 12.dp,
+                vertical = if (compactLabels) 8.dp else 6.dp
+            ),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Icon(
@@ -1653,14 +1915,20 @@ private fun BottomNavItem(
                 tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(20.dp)
             )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = tab.label,
-                fontSize = 11.sp,
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.height(4.dp))
+            if (!compactLabels) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = tab.label,
+                    fontSize = 11.sp,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+            } else {
+                Spacer(modifier = Modifier.height(6.dp))
+            }
             Box(
                 modifier = Modifier
                     .width(20.dp)
@@ -1672,4 +1940,10 @@ private fun BottomNavItem(
             )
         }
     }
+}
+
+private fun formatTimestampLabel(epochMillis: Long): String {
+    return Instant.ofEpochMilli(epochMillis)
+        .atZone(ZoneId.systemDefault())
+        .format(DateTimeFormatter.ofPattern("MMM d, HH:mm:ss"))
 }

@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.ex57.capital.model.AnalysisResult
 import com.ex57.capital.model.ClosedTradeRecord
 import com.ex57.capital.model.DataQuality
+import com.ex57.capital.model.FeedState
 import com.ex57.capital.model.MarketCandle
 import com.ex57.capital.model.PositionSide
 import com.ex57.capital.model.TradeBias
@@ -17,10 +18,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 
 class PriceViewModel(application: Application) : AndroidViewModel(application) {
-    private val client: MarketDataSource = DerivWebSocketClient()
+    private val client: MarketDataSource = DerivWebSocketClient(application)
     private val tradeMemoryStore = TradeMemoryStore(application)
+    private val marketSessionStore = MarketSessionStore(application)
     private val _openPositions = MutableStateFlow(tradeMemoryStore.loadOpenPositions())
     private val _closedTrades = MutableStateFlow(tradeMemoryStore.loadClosedTrades())
+    private val _demoBalance = MutableStateFlow(tradeMemoryStore.loadDemoBalance())
 
     val price: StateFlow<Double?> = client.priceFlow.stateIn(
         viewModelScope,
@@ -52,6 +55,12 @@ class PriceViewModel(application: Application) : AndroidViewModel(application) {
         DataQuality.ESTIMATED
     )
 
+    val feedState: StateFlow<FeedState> = client.feedStateFlow.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        FeedState()
+    )
+
     val status: StateFlow<String> = client.statusFlow.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
@@ -66,6 +75,7 @@ class PriceViewModel(application: Application) : AndroidViewModel(application) {
 
     val openPositions: StateFlow<List<TradePosition>> = _openPositions
     val closedTrades: StateFlow<List<ClosedTradeRecord>> = _closedTrades
+    val demoBalance: StateFlow<Double> = _demoBalance
 
     fun connect(symbol: String, timeframe: String) {
         client.connect(symbol, timeframe)
@@ -95,12 +105,14 @@ class PriceViewModel(application: Application) : AndroidViewModel(application) {
             TradeBias.NEUTRAL -> return
         }
         val entryPrice = executionPrice ?: analysisResult.tradeSetup.entry ?: return
+        val stakeUsd = (_demoBalance.value * 0.10).coerceIn(100.0, 1_000.0)
         val position = TradePosition(
             id = tradeMemoryStore.newPositionId(),
             symbolCode = symbol.code,
             derivSymbol = symbol.derivSymbol,
             timeframe = timeframe,
             side = side,
+            stakeUsd = stakeUsd,
             entryPrice = entryPrice,
             stopLoss = analysisResult.tradeSetup.stopLoss,
             takeProfit = analysisResult.tradeSetup.takeProfit,
@@ -122,10 +134,19 @@ class PriceViewModel(application: Application) : AndroidViewModel(application) {
         )
         _openPositions.value = openPositions
         _closedTrades.value = closedTrades
+        _demoBalance.value = tradeMemoryStore.loadDemoBalance()
+    }
+
+    fun latestKnownPrice(derivSymbol: String, timeframe: String): Double? {
+        return marketSessionStore.loadSession(derivSymbol, timeframe)?.lastPrice
     }
 
     override fun onCleared() {
         super.onCleared()
-        client.disconnect()
+        if (client is DerivWebSocketClient) {
+            client.shutdown()
+        } else {
+            client.disconnect()
+        }
     }
 }

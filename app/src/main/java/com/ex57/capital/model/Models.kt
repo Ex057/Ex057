@@ -60,8 +60,27 @@ enum class TradeBias(val label: String) {
 
 enum class DataQuality(val label: String) {
     EXCHANGE_OHLC("Exchange OHLC"),
+    CACHED("Cached"),
     ESTIMATED("Estimated")
 }
+
+enum class FeedPhase(val label: String) {
+    DISCONNECTED("Disconnected"),
+    CONNECTING("Connecting"),
+    CONNECTED("Connected"),
+    WAITING_FOR_DATA("Waiting for market data"),
+    LIVE("Live"),
+    STALE("Stale"),
+    RECONNECTING("Reconnecting"),
+    ERROR("Feed error")
+}
+
+data class FeedState(
+    val phase: FeedPhase = FeedPhase.DISCONNECTED,
+    val message: String = FeedPhase.DISCONNECTED.label,
+    val reconnectAttempt: Int = 0,
+    val lastTickEpochMillis: Long? = null
+)
 
 enum class TradeDecision(val label: String) {
     ELIGIBLE("Eligible"),
@@ -127,6 +146,7 @@ data class TradePosition(
     val derivSymbol: String,
     val timeframe: String,
     val side: PositionSide,
+    val stakeUsd: Double,
     val entryPrice: Double,
     val stopLoss: Double?,
     val takeProfit: Double?,
@@ -141,6 +161,7 @@ data class ClosedTradeRecord(
     val symbolCode: String,
     val timeframe: String,
     val side: PositionSide,
+    val stakeUsd: Double,
     val entryPrice: Double,
     val exitPrice: Double,
     val stopLoss: Double?,
@@ -148,6 +169,7 @@ data class ClosedTradeRecord(
     val openedAtEpochMillis: Long,
     val closedAtEpochMillis: Long,
     val outcomeLabel: String,
+    val pnlUsd: Double,
     val pnlPercent: Double,
     val rationale: String
 )

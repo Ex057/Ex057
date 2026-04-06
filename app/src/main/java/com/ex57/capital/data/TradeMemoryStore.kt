@@ -12,6 +12,10 @@ import java.util.UUID
 class TradeMemoryStore(context: Context) {
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+    fun loadDemoBalance(): Double {
+        return prefs.getFloat(KEY_DEMO_BALANCE, DEFAULT_DEMO_BALANCE.toFloat()).toDouble()
+    }
+
     fun loadOpenPositions(): List<TradePosition> {
         return readArray(KEY_OPEN_POSITIONS).mapNotNull(::positionFromJson)
     }
@@ -44,6 +48,7 @@ class TradeMemoryStore(context: Context) {
             PositionSide.LONG -> ((exitPrice - target.entryPrice) / target.entryPrice) * 100.0
             PositionSide.SHORT -> ((target.entryPrice - exitPrice) / target.entryPrice) * 100.0
         }
+        val pnlUsd = target.stakeUsd * (pnlPercent / 100.0)
         val outcomeLabel = when {
             target.takeProfit != null && (
                 (target.side == PositionSide.LONG && exitPrice >= target.takeProfit) ||
@@ -62,6 +67,7 @@ class TradeMemoryStore(context: Context) {
             symbolCode = target.symbolCode,
             timeframe = target.timeframe,
             side = target.side,
+            stakeUsd = target.stakeUsd,
             entryPrice = target.entryPrice,
             exitPrice = exitPrice,
             stopLoss = target.stopLoss,
@@ -69,13 +75,16 @@ class TradeMemoryStore(context: Context) {
             openedAtEpochMillis = target.openedAtEpochMillis,
             closedAtEpochMillis = closedAtEpochMillis,
             outcomeLabel = outcomeLabel,
+            pnlUsd = pnlUsd,
             pnlPercent = pnlPercent,
             rationale = target.rationale
         )
 
         val history = listOf(closedTrade) + loadClosedTrades()
+        val updatedBalance = loadDemoBalance() + pnlUsd
         saveOpenPositions(remaining)
         saveClosedTrades(history.take(MAX_CLOSED_TRADES))
+        saveDemoBalance(updatedBalance)
         return remaining to history.take(MAX_CLOSED_TRADES)
     }
 
@@ -87,6 +96,10 @@ class TradeMemoryStore(context: Context) {
 
     private fun saveClosedTrades(trades: List<ClosedTradeRecord>) {
         saveArray(KEY_CLOSED_TRADES, trades.map(::closedTradeToJson))
+    }
+
+    private fun saveDemoBalance(balance: Double) {
+        prefs.edit().putFloat(KEY_DEMO_BALANCE, balance.toFloat()).apply()
     }
 
     private fun readArray(key: String): List<JSONObject> {
@@ -112,6 +125,7 @@ class TradeMemoryStore(context: Context) {
             .put("derivSymbol", position.derivSymbol)
             .put("timeframe", position.timeframe)
             .put("side", position.side.name)
+            .put("stakeUsd", position.stakeUsd)
             .put("entryPrice", position.entryPrice)
             .put("stopLoss", position.stopLoss)
             .put("takeProfit", position.takeProfit)
@@ -129,6 +143,7 @@ class TradeMemoryStore(context: Context) {
                 derivSymbol = json.optString("derivSymbol"),
                 timeframe = json.getString("timeframe"),
                 side = PositionSide.valueOf(json.getString("side")),
+                stakeUsd = json.optDoubleOrNull("stakeUsd") ?: DEFAULT_STAKE_USD,
                 entryPrice = json.getDouble("entryPrice"),
                 stopLoss = json.optDoubleOrNull("stopLoss"),
                 takeProfit = json.optDoubleOrNull("takeProfit"),
@@ -146,6 +161,7 @@ class TradeMemoryStore(context: Context) {
             .put("symbolCode", trade.symbolCode)
             .put("timeframe", trade.timeframe)
             .put("side", trade.side.name)
+            .put("stakeUsd", trade.stakeUsd)
             .put("entryPrice", trade.entryPrice)
             .put("exitPrice", trade.exitPrice)
             .put("stopLoss", trade.stopLoss)
@@ -153,6 +169,7 @@ class TradeMemoryStore(context: Context) {
             .put("openedAtEpochMillis", trade.openedAtEpochMillis)
             .put("closedAtEpochMillis", trade.closedAtEpochMillis)
             .put("outcomeLabel", trade.outcomeLabel)
+            .put("pnlUsd", trade.pnlUsd)
             .put("pnlPercent", trade.pnlPercent)
             .put("rationale", trade.rationale)
     }
@@ -164,6 +181,7 @@ class TradeMemoryStore(context: Context) {
                 symbolCode = json.getString("symbolCode"),
                 timeframe = json.getString("timeframe"),
                 side = PositionSide.valueOf(json.getString("side")),
+                stakeUsd = json.optDoubleOrNull("stakeUsd") ?: DEFAULT_STAKE_USD,
                 entryPrice = json.getDouble("entryPrice"),
                 exitPrice = json.getDouble("exitPrice"),
                 stopLoss = json.optDoubleOrNull("stopLoss"),
@@ -171,6 +189,7 @@ class TradeMemoryStore(context: Context) {
                 openedAtEpochMillis = json.getLong("openedAtEpochMillis"),
                 closedAtEpochMillis = json.getLong("closedAtEpochMillis"),
                 outcomeLabel = json.optString("outcomeLabel"),
+                pnlUsd = json.optDoubleOrNull("pnlUsd") ?: ((json.optDouble("pnlPercent") / 100.0) * (json.optDoubleOrNull("stakeUsd") ?: DEFAULT_STAKE_USD)),
                 pnlPercent = json.optDouble("pnlPercent"),
                 rationale = json.optString("rationale")
             )
@@ -185,6 +204,9 @@ class TradeMemoryStore(context: Context) {
         private const val PREFS_NAME = "trade_memory_store"
         private const val KEY_OPEN_POSITIONS = "open_positions"
         private const val KEY_CLOSED_TRADES = "closed_trades"
+        private const val KEY_DEMO_BALANCE = "demo_balance"
         private const val MAX_CLOSED_TRADES = 50
+        private const val DEFAULT_DEMO_BALANCE = 10_000.0
+        private const val DEFAULT_STAKE_USD = 1_000.0
     }
 }
