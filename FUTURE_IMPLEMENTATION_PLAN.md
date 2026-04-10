@@ -12,7 +12,9 @@ This document translates the notes in `futureIMP.docx` into an implementation-re
 
 ## Prediction Analysis Rework Track
 
-Branch: `prediction-analysis-lab`
+Preserved branch: `prediction-analysis-lab`
+
+Current research branch: `kronos-research`
 
 ### Why This Track Exists
 
@@ -61,9 +63,178 @@ Branch: `prediction-analysis-lab`
 4. Build a replay and trade-labeling engine that can evaluate the current strategy on historical candles.
 5. Use replay results to tune thresholds in `StrategyEvaluator` and replace heuristic evidence in the UI.
 
+### Lessons From Kronos -> Changes For ex57
+
+#### 1. Sequence forecasting, not only signal scoring
+
+What Kronos teaches:
+
+- Market direction should be inferred from a long sequence of candles, not only from the latest heuristic checks.
+- The model reasons over a fixed historical context window before forecasting future candles.
+
+What ex57 should change:
+
+- Stop treating the current bias engine as the only source of truth for entries.
+- Add a forecast-context layer that evaluates the next `N` candles from the last `256-512` candles of history.
+- Use that forecast layer as a second opinion before promoting a setup to `Eligible`.
+
+#### 2. Strict dataset shape and clean timestamps
+
+What Kronos teaches:
+
+- Prediction quality depends on consistent candle schema and consistent timestamps.
+- Training and inference both expect ordered OHLC-style series with explicit time features.
+
+What ex57 should change:
+
+- Build a `DerivPredictionDataset` pipeline that stores:
+  - symbol
+  - timeframe
+  - timestamps
+  - open
+  - high
+  - low
+  - close
+- Add derived time features for:
+  - minute
+  - hour
+  - weekday
+  - day
+  - month
+- Ensure the same cleaned candle format is used by:
+  - live analysis
+  - offline replay
+  - future Kronos experiments
+
+#### 3. Normalize per window, not per raw market scale
+
+What Kronos teaches:
+
+- Each input window is normalized before inference so the model is not dominated by raw price scale.
+- This matters when instruments have very different price ranges.
+
+What ex57 should change:
+
+- Normalize signal inputs per symbol and per rolling window before scoring.
+- Stop relying only on absolute move thresholds that behave differently across Deriv forex pairs and synthetic indices.
+- Re-express more of the analysis in relative terms:
+  - return
+  - range expansion
+  - wick ratio
+  - distance from local mean
+  - stop distance in normalized units
+
+#### 4. Predict a path, then derive a trade
+
+What Kronos teaches:
+
+- The useful output is not just a label like bullish or bearish.
+- It predicts the shape of the next candles, then downstream logic can decide what that means.
+
+What ex57 should change:
+
+- Separate the system into:
+  - forecast generation
+  - trade interpretation
+  - execution filtering
+- Derive entry quality from forecast structure such as:
+  - expected next-candle direction
+  - expected range expansion or contraction
+  - expected pullback depth before continuation
+  - expected invalidation level
+- Use the forecasted path to improve:
+  - entry price placement
+  - stop placement
+  - take-profit realism
+
+#### 5. Confidence should come from forecast stability
+
+What Kronos teaches:
+
+- It supports multiple sampled forecasts and averages them.
+- This creates a natural way to judge whether a view is stable or noisy.
+
+What ex57 should change:
+
+- Replace part of the current hand-tuned confidence logic with forecast-agreement logic.
+- Estimate confidence from:
+  - agreement across multiple forecast runs
+  - consistency between forecast direction and current heuristic bias
+  - replay win rate for similar regimes
+- Downgrade setups when forecast paths disagree materially.
+
+#### 6. Evaluation must be replay-based
+
+What Kronos teaches:
+
+- Prediction quality should be measured against held-out future candles, not assumed from live-looking charts.
+- Regression and error testing are treated as first-class checks.
+
+What ex57 should change:
+
+- Build a rolling replay evaluator for every symbol and timeframe.
+- Measure:
+  - directional accuracy
+  - MAE and MSE on next-candle close or range
+  - entry hit rate
+  - average adverse excursion
+  - average favorable excursion
+  - expectancy after spread and execution assumptions
+- Stop trusting a new signal rule until it improves replay metrics over the current heuristic baseline.
+
+#### 7. Batch research matters
+
+What Kronos teaches:
+
+- The same prediction engine can be evaluated across many series in parallel.
+
+What ex57 should change:
+
+- Research symbols in batches instead of guessing from one chart at a time.
+- Rank Deriv symbols and timeframes by:
+  - prediction stability
+  - directional edge
+  - replay expectancy
+  - drawdown profile
+- Only expose higher-confidence markets prominently in the app once this ranking exists.
+
+### ex57 Signal Cleanup Plan
+
+#### Phase A: Clean the current heuristic engine
+
+- Reduce overconfident approvals from weak confluence.
+- Rework thresholds so `Eligible` means both directional alignment and acceptable replay behavior.
+- Add explicit downgrade reasons when the setup is blocked by:
+  - poor forecast agreement
+  - weak structural context
+  - spread or stop-distance inefficiency
+  - unstable recent regime
+
+#### Phase B: Add a forecast research layer beside the current engine
+
+- Keep the current heuristic engine as a baseline.
+- Introduce an offline forecast module inspired by Kronos data handling.
+- Compare:
+  - heuristic-only bias
+  - forecast-only direction
+  - blended heuristic + forecast decision
+
+#### Phase C: Promote only the parts that improve entries
+
+- If Kronos-style forecasting improves directional timing, integrate it.
+- If it only improves regime filtering, use it only as a market-selection filter.
+- Do not replace the whole app engine unless replay shows consistent improvement after spread-adjusted evaluation.
+
+### Guardrails For Applying Kronos Ideas
+
+- Do not copy Kronos model code directly into the Android app.
+- Do not assume stock-market training transfers cleanly to Deriv synthetic indices.
+- Do not trust candle prediction accuracy alone; convert it into trading metrics first.
+- Do not use forecast confidence without spread, stop-distance, and lot-sizing impact.
+
 ### External Reference Work
 
-- Review `Ex057/Kronos` for reusable architecture and model assumptions once repository access is available.
+- Review the cloned sibling repository at `/Users/edwinarinda/StudioProjects/Kronos` for reusable architecture and model assumptions.
 - Compare its data ingestion, feature extraction, prediction pipeline, and evaluation loop against this branch before lifting any logic.
 - Do not merge prediction logic from `Kronos` directly until the contract model and evaluation metrics are aligned with Deriv instruments.
 

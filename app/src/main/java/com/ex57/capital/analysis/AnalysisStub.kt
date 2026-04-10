@@ -1,7 +1,9 @@
 package com.ex57.capital.analysis
 
 import com.ex57.capital.model.AnalysisResult
+import com.ex57.capital.model.ClosedTradeRecord
 import com.ex57.capital.model.MarketCandle
+import com.ex57.capital.model.SignalFilterSettings
 import com.ex57.capital.model.TradePosition
 import com.ex57.capital.model.TradingSymbol
 
@@ -13,12 +15,16 @@ object AnalysisStub {
         candles: List<MarketCandle>,
         candleStack: Map<String, List<MarketCandle>> = emptyMap(),
         recentPrices: List<Double>,
+        signalFilters: SignalFilterSettings = SignalFilterSettings(),
+        closedTrades: List<ClosedTradeRecord> = emptyList(),
         openPosition: TradePosition? = null
     ): AnalysisResult {
         val input = AnalysisInput(
             timeframe = timeframe,
             timeframePlan = AnalysisSupport.buildTimeframePlan(timeframe),
             mode = mode,
+            signalFilters = signalFilters,
+            closedTrades = closedTrades,
             candles = candles,
             candleStack = candleStack,
             recentPrices = recentPrices
@@ -34,7 +40,8 @@ object AnalysisStub {
             }
         }
 
-        val evaluation = StrategyEvaluator.evaluate(symbol, input, features)
+        val forecastResearch = ForecastResearchEngine.analyze(input, features)
+        val evaluation = StrategyEvaluator.evaluate(symbol, input, features, forecastResearch)
         val result = RiskManager.buildResult(symbol, input, features, evaluation)
         return PositionManager.applyPositionContext(result, openPosition, features.last, symbol, timeframe)
     }

@@ -4,7 +4,19 @@ data class TradingSymbol(
     val code: String,
     val label: String,
     val category: String,
-    val derivSymbol: String
+    val derivSymbol: String,
+    val spec: SymbolTradingSpec = SymbolTradingSpec()
+)
+
+data class SymbolTradingSpec(
+    val contractSize: Double = 1.0,
+    val minLot: Double = 0.01,
+    val maxLot: Double = 50.0,
+    val lotStep: Double = 0.01,
+    val typicalSpread: Double = 0.0001,
+    val effectiveLeverage: Double = 100.0,
+    val tickSize: Double = 0.0001,
+    val pricePrecision: Int = 5
 )
 
 enum class PositionSide(val label: String) {
@@ -29,6 +41,38 @@ enum class ConfirmationMode(
     MODERATE("Moderate", 4, "Balanced continuation", "Balanced risk and opportunity"),
     AGGRESSIVE("Aggressive", 3, "Early momentum", "More setups, higher noise"),
     LENIENT("Lenient", 3, "Three credible confirmations", "Earliest entries, loosest filtering")
+}
+
+data class SignalFilterSettings(
+    val enforceHardBlocks: Boolean = true,
+    val requireForecastSupport: Boolean = true,
+    val requireSetupState: Boolean = true,
+    val requireSetupConfirmations: Boolean = true,
+    val requireConfluence: Boolean = true,
+    val requireDirectionalEdge: Boolean = true,
+    val requireRiskPenalty: Boolean = true,
+    val requireExpectancy: Boolean = true
+) {
+    fun hasOverrides(): Boolean = disabledGateLabels().isNotEmpty()
+
+    fun disabledGateLabels(): List<String> = buildList {
+        if (!enforceHardBlocks) add("hard blocks")
+        if (!requireForecastSupport) add("forecast gate")
+        if (!requireSetupState) add("setup state")
+        if (!requireSetupConfirmations) add("setup count")
+        if (!requireConfluence) add("confluence")
+        if (!requireDirectionalEdge) add("directional edge")
+        if (!requireRiskPenalty) add("risk cap")
+        if (!requireExpectancy) add("expectancy")
+    }
+
+    fun summary(maxItems: Int = 3): String {
+        val labels = disabledGateLabels()
+        if (labels.isEmpty()) return "All signal guardrails are active."
+        val visible = labels.take(maxItems)
+        val suffix = if (labels.size > maxItems) " +${labels.size - maxItems} more" else ""
+        return "Research overrides active: ${visible.joinToString()} disabled$suffix."
+    }
 }
 
 data class ModeConfig(
@@ -125,7 +169,26 @@ data class AnalysisResult(
     val setupType: SetupType,
     val nextTrigger: String,
     val mtfaStatus: MtfaStatus? = null,
+    val forecastResearch: ForecastResearch? = null,
+    val performanceFeedback: TradePerformanceFeedback? = null,
     val positionGuidance: PositionGuidance? = null
+)
+
+data class ForecastResearch(
+    val bias: TradeBias,
+    val strengthScore: Double,
+    val stabilityScore: Double,
+    val expectedMovePercent: Double,
+    val summary: String
+)
+
+data class TradePerformanceFeedback(
+    val sampleSize: Int,
+    val consecutiveLosses: Int,
+    val recentWinRate: Int,
+    val recentNetPnlUsd: Double,
+    val strictModeActive: Boolean,
+    val summary: String
 )
 
 data class MtfaStatus(
@@ -151,6 +214,8 @@ data class PendingTradeOrder(
     val side: PositionSide,
     val lotSize: Double,
     val stakeUsd: Double,
+    val usedMarginUsd: Double = 0.0,
+    val estimatedSpreadCostUsd: Double = 0.0,
     val targetEntryPrice: Double,
     val stopLoss: Double?,
     val takeProfit: Double?,
@@ -181,6 +246,8 @@ data class TradePosition(
     val initialLotSize: Double,
     val stakeUsd: Double,
     val initialStakeUsd: Double,
+    val usedMarginUsd: Double = 0.0,
+    val estimatedSpreadCostUsd: Double = 0.0,
     val entryPrice: Double,
     val stopLoss: Double?,
     val takeProfit: Double?,

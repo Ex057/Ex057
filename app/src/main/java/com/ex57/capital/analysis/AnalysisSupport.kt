@@ -78,7 +78,7 @@ internal object AnalysisSupport {
 
     fun buildTimeframePlan(timeframe: String): AnalysisTimeframePlan {
         return when (timeframe) {
-            "1m" -> AnalysisTimeframePlan(macro = "15m", structure = "5m", setup = "1m", trigger = "1m")
+            "1m" -> AnalysisTimeframePlan(macro = "1h", structure = "15m", setup = "5m", trigger = "1m")
             "5m" -> AnalysisTimeframePlan(macro = "1h", structure = "15m", setup = "5m", trigger = "1m")
             "15m" -> AnalysisTimeframePlan(macro = "4h", structure = "1h", setup = "15m", trigger = "5m")
             "30m" -> AnalysisTimeframePlan(macro = "4h", structure = "1h", setup = "30m", trigger = "15m")

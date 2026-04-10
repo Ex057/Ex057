@@ -2,10 +2,14 @@ package com.ex57.capital.analysis
 
 import com.ex57.capital.model.Confirmation
 import com.ex57.capital.model.AnalysisTimeframePlan
+import com.ex57.capital.model.ClosedTradeRecord
 import com.ex57.capital.model.ConfirmationMode
 import com.ex57.capital.model.EvidenceSnapshot
+import com.ex57.capital.model.ForecastResearch
 import com.ex57.capital.model.MarketCandle
+import com.ex57.capital.model.SignalFilterSettings
 import com.ex57.capital.model.SetupType
+import com.ex57.capital.model.TradePerformanceFeedback
 import com.ex57.capital.model.TradeBias
 import com.ex57.capital.model.TradeDecision
 
@@ -13,6 +17,8 @@ internal data class AnalysisInput(
     val timeframe: String,
     val timeframePlan: AnalysisTimeframePlan,
     val mode: ConfirmationMode,
+    val signalFilters: SignalFilterSettings,
+    val closedTrades: List<ClosedTradeRecord>,
     val candles: List<MarketCandle>,
     val candleStack: Map<String, List<MarketCandle>>,
     val recentPrices: List<Double>
@@ -59,6 +65,8 @@ internal data class StrategyEvaluation(
     val rejectionReasons: List<String>,
     val confidence: Int,
     val confirmations: List<Confirmation>,
+    val forecastResearch: ForecastResearch,
+    val performanceFeedback: TradePerformanceFeedback,
     val topDownBullScore: Double,
     val topDownBearScore: Double,
     val corePassed: Int,

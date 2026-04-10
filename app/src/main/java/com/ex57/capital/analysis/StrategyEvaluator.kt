@@ -2,9 +2,12 @@ package com.ex57.capital.analysis
 
 import com.ex57.capital.model.Confirmation
 import com.ex57.capital.model.ConfirmationMode
+import com.ex57.capital.model.ClosedTradeRecord
+import com.ex57.capital.model.ForecastResearch
 import com.ex57.capital.model.SetupType
 import com.ex57.capital.model.TradeBias
 import com.ex57.capital.model.TradeDecision
+import com.ex57.capital.model.TradePerformanceFeedback
 import com.ex57.capital.model.TradingSymbol
 import kotlin.math.abs
 
@@ -12,9 +15,11 @@ internal object StrategyEvaluator {
     fun evaluate(
         symbol: TradingSymbol,
         input: AnalysisInput,
-        features: FeatureExtractionResult
+        features: FeatureExtractionResult,
+        forecastResearch: ForecastResearch
     ): StrategyEvaluation {
         val modeConfig = AnalysisSupport.configFor(input.mode)
+        val filterSettings = input.signalFilters
         val htfBullScore = AnalysisSupport.directionalScore(
             when (features.topDown.higherTimeframeBias) {
                 TradeBias.BULLISH -> 1.0
@@ -167,31 +172,53 @@ internal object StrategyEvaluator {
             newsPulse = features.newsPulse.pulseScore,
             confluenceMetaScore = confluenceMetaScore
         )
+        val bullishForecastBonus = forecastBiasScore(forecastResearch, bullish = true)
+        val bearishForecastBonus = forecastBiasScore(forecastResearch, bullish = false)
 
         val candidateScores = listOf(
             CandidateSetup(
                 SetupType.TREND_PULLBACK,
                 TradeBias.BULLISH,
                 bullishDirectionalCount,
-                (bullishDirectionalStrength * 2.6) + (trendPullbackBullSetupScore * 2.1) + (topDownBullScore * 1.2) + (confluenceMetaScore * 1.1) - riskPenalty
+                (bullishDirectionalStrength * 2.6) +
+                    (trendPullbackBullSetupScore * 2.1) +
+                    (topDownBullScore * 1.2) +
+                    (confluenceMetaScore * 1.1) +
+                    (bullishForecastBonus * 0.9) -
+                    riskPenalty
             ),
             CandidateSetup(
                 SetupType.TREND_PULLBACK,
                 TradeBias.BEARISH,
                 bearishDirectionalCount,
-                (bearishDirectionalStrength * 2.6) + (trendPullbackBearSetupScore * 2.1) + (topDownBearScore * 1.2) + (confluenceMetaScore * 1.1) - riskPenalty
+                (bearishDirectionalStrength * 2.6) +
+                    (trendPullbackBearSetupScore * 2.1) +
+                    (topDownBearScore * 1.2) +
+                    (confluenceMetaScore * 1.1) +
+                    (bearishForecastBonus * 0.9) -
+                    riskPenalty
             ),
             CandidateSetup(
                 SetupType.BREAKOUT,
                 TradeBias.BULLISH,
                 bullishDirectionalCount,
-                (bullishDirectionalStrength * 2.4) + (breakoutBullSetupScore * 2.2) + (topDownBullScore * 1.1) + (confluenceMetaScore * 1.0) - riskPenalty
+                (bullishDirectionalStrength * 2.4) +
+                    (breakoutBullSetupScore * 2.2) +
+                    (topDownBullScore * 1.1) +
+                    (confluenceMetaScore * 1.0) +
+                    (bullishForecastBonus * 0.9) -
+                    riskPenalty
             ),
             CandidateSetup(
                 SetupType.BREAKOUT,
                 TradeBias.BEARISH,
                 bearishDirectionalCount,
-                (bearishDirectionalStrength * 2.4) + (breakoutBearSetupScore * 2.2) + (topDownBearScore * 1.1) + (confluenceMetaScore * 1.0) - riskPenalty
+                (bearishDirectionalStrength * 2.4) +
+                    (breakoutBearSetupScore * 2.2) +
+                    (topDownBearScore * 1.1) +
+                    (confluenceMetaScore * 1.0) +
+                    (bearishForecastBonus * 0.9) -
+                    riskPenalty
             )
         )
         val bestCandidate = candidateScores.maxByOrNull { it.score }!!
@@ -210,6 +237,18 @@ internal object StrategyEvaluator {
             SetupType.NONE -> 0
         }
         val directionalEdge = (bestCandidate.score - (runnerUp?.score ?: 0.0)).coerceAtLeast(0.0)
+        val forecastSupportScore = forecastSupportScore(
+            forecastResearch = forecastResearch,
+            bias = bestCandidate.bias
+        )
+        val forecastHardConflict = forecastResearch.stabilityScore >= 0.70 &&
+            forecastResearch.bias != TradeBias.NEUTRAL &&
+            forecastResearch.bias != bestCandidate.bias
+        val performanceFeedback = buildTradePerformanceFeedback(
+            symbolCode = symbol.code,
+            timeframe = input.timeframe,
+            closedTrades = input.closedTrades
+        )
         val setupStateAllowed = when (input.mode) {
             ConfirmationMode.CONSERVATIVE -> features.topDown.setupState in setOf("pullback", "aligned") && features.topDown.triggerState in setOf("entry_ready", "consolidating")
             ConfirmationMode.MODERATE -> features.topDown.setupState in setOf("pullback", "aligned", "mixed")
@@ -217,19 +256,39 @@ internal object StrategyEvaluator {
             ConfirmationMode.LENIENT -> true
         }
         val hardBlock = when (input.mode) {
-            ConfirmationMode.CONSERVATIVE -> severeNoise || severeNews
-            ConfirmationMode.MODERATE -> severeNoise && severeNews
-            ConfirmationMode.AGGRESSIVE -> severeNoise && severeNews && confluenceMetaScore < 0.4
-            ConfirmationMode.LENIENT -> severeNoise && severeNews && topDownDirectionalGate < 0.25
+            ConfirmationMode.CONSERVATIVE -> filterSettings.enforceHardBlocks && (severeNoise || severeNews || forecastHardConflict)
+            ConfirmationMode.MODERATE -> filterSettings.enforceHardBlocks && ((severeNoise && severeNews) || forecastHardConflict)
+            ConfirmationMode.AGGRESSIVE -> filterSettings.enforceHardBlocks && severeNoise && severeNews && confluenceMetaScore < 0.4
+            ConfirmationMode.LENIENT -> filterSettings.enforceHardBlocks && severeNoise && severeNews && topDownDirectionalGate < 0.25
         }
+        val forecastThreshold = when (input.mode) {
+            ConfirmationMode.CONSERVATIVE -> 0.42
+            ConfirmationMode.MODERATE -> 0.30
+            ConfirmationMode.AGGRESSIVE -> 0.18
+            ConfirmationMode.LENIENT -> 0.0
+        }
+        val forecastGatePassed = !filterSettings.requireForecastSupport || forecastSupportScore >= forecastThreshold
+        val setupStateGatePassed = !filterSettings.requireSetupState || setupStateAllowed
+        val directionalEdgeGatePassed = !filterSettings.requireDirectionalEdge || directionalEdge >= modeConfig.directionalEdgeThreshold
+        val setupCountGatePassed = !filterSettings.requireSetupConfirmations || setupQualityCount >= modeConfig.requiredSetupConfirmations
+        val confluenceGatePassed = !filterSettings.requireConfluence || confluenceMetaScore >= modeConfig.confluenceGate
+        val riskPenaltyGatePassed = !filterSettings.requireRiskPenalty || riskPenalty <= modeConfig.maxRiskPenalty
+        val setupQualityFloor = setupQualityThreshold(modeConfig, bestCandidate.type)
+        val historyGatePassed = !performanceFeedback.strictModeActive || (
+            setupQualityScore >= (setupQualityFloor + 0.10) &&
+                forecastSupportScore >= maxOf(forecastThreshold, 0.35) &&
+                confluenceMetaScore >= maxOf(modeConfig.confluenceGate, 0.55) &&
+                directionalEdge >= maxOf(modeConfig.directionalEdgeThreshold, 0.12)
+            )
 
         val bias = if (!hardBlock &&
             bestCandidate.corePassed >= modeConfig.minimumCoreRequired &&
             directionalStrength >= modeConfig.directionalStrengthThreshold &&
             bestCandidate.score >= modeConfig.biasActivationThreshold &&
             topDownDirectionalGate >= modeConfig.topDownDirectionalThreshold &&
-            directionalEdge >= modeConfig.directionalEdgeThreshold &&
-            setupStateAllowed
+            directionalEdgeGatePassed &&
+            forecastGatePassed &&
+            setupStateGatePassed
         ) {
             bestCandidate.bias
         } else {
@@ -269,15 +328,22 @@ internal object StrategyEvaluator {
             !hardBlock &&
             bestCandidate.corePassed >= modeConfig.minimumCoreRequired &&
             directionalStrength >= modeConfig.directionalStrengthThreshold &&
-            setupQualityScore >= setupQualityThreshold(modeConfig, bestCandidate.type) &&
-            setupQualityCount >= modeConfig.requiredSetupConfirmations &&
-            confluenceMetaScore >= modeConfig.confluenceGate &&
-            riskPenalty <= modeConfig.maxRiskPenalty
-        val approved = when (stage) {
-            1 -> baseApproval
-            2 -> baseApproval && expectancyValue > -0.05
-            else -> baseApproval && expectancyValue > 0.0
+            setupQualityScore >= setupQualityFloor &&
+            setupCountGatePassed &&
+            confluenceGatePassed &&
+            forecastGatePassed &&
+            riskPenaltyGatePassed &&
+            historyGatePassed
+        val expectancyGatePassed = if (!filterSettings.requireExpectancy) {
+            true
+        } else {
+            when (stage) {
+                1 -> true
+                2 -> expectancyValue > -0.05
+                else -> expectancyValue > 0.0
+            }
         }
+        val approved = baseApproval && expectancyGatePassed
         val passedCount = confirmations.count { it.passed }
         val confirmationRatio = passedCount.toDouble() / confirmations.size.coerceAtLeast(1)
         val coreRatio = bestCandidate.corePassed.toDouble() / 8.0
@@ -310,18 +376,23 @@ internal object StrategyEvaluator {
                 (sampleScore * 4) +
                 (riskScore * 5) +
                 (approvalScore * 6)
-            ).toInt().coerceIn(20, 89)
+            ).toInt().let { raw ->
+                if (performanceFeedback.strictModeActive) raw - (performanceFeedback.consecutiveLosses * 3) else raw
+            }.coerceIn(20, 89)
 
         val decision = when {
             bias == TradeBias.NEUTRAL || bestCandidate.corePassed < AnalysisSupport.minimumCoreRequired(input.mode) -> TradeDecision.REJECT
-            approved && (stage == 1 || expectancyValue > 0.0) -> TradeDecision.ELIGIBLE
+            approved -> TradeDecision.ELIGIBLE
+            performanceFeedback.strictModeActive && bias != TradeBias.NEUTRAL -> TradeDecision.WATCHLIST
+            filterSettings.requireForecastSupport && forecastSupportScore < forecastThreshold && bestCandidate.bias != TradeBias.NEUTRAL -> TradeDecision.WATCHLIST
             input.mode == ConfirmationMode.LENIENT && bias != TradeBias.NEUTRAL && !hardBlock -> TradeDecision.WATCHLIST
             baseApproval -> TradeDecision.WATCHLIST
-            stage >= 3 && expectancyValue <= 0.0 -> TradeDecision.REJECT
+            filterSettings.requireExpectancy && stage >= 3 && expectancyValue <= 0.0 -> TradeDecision.REJECT
             else -> TradeDecision.WATCHLIST
         }
         val rejectionReasons = buildRejectionReasons(
             mode = input.mode,
+            filterSettings = filterSettings,
             hardBlock = hardBlock,
             severeNoise = severeNoise,
             severeNews = severeNews,
@@ -335,7 +406,10 @@ internal object StrategyEvaluator {
             topDownDirectionalThreshold = modeConfig.topDownDirectionalThreshold,
             directionalEdge = directionalEdge,
             directionalEdgeThreshold = modeConfig.directionalEdgeThreshold,
-            setupStateAllowed = setupStateAllowed,
+            forecastResearch = forecastResearch,
+            forecastSupportScore = forecastSupportScore,
+            forecastThreshold = forecastThreshold,
+            setupStateAllowed = setupStateGatePassed,
             setupQualityScore = setupQualityScore,
             setupQualityThreshold = setupQualityThreshold(modeConfig, bestCandidate.type),
             setupQualityCount = setupQualityCount,
@@ -347,7 +421,8 @@ internal object StrategyEvaluator {
             stage = stage,
             expectancyValue = expectancyValue,
             approved = approved,
-            decision = decision
+            decision = decision,
+            performanceFeedback = performanceFeedback
         )
 
         return StrategyEvaluation(
@@ -358,6 +433,8 @@ internal object StrategyEvaluator {
             rejectionReasons = rejectionReasons,
             confidence = confidence,
             confirmations = confirmations,
+            forecastResearch = forecastResearch,
+            performanceFeedback = performanceFeedback,
             topDownBullScore = topDownBullScore,
             topDownBearScore = topDownBearScore,
             corePassed = bestCandidate.corePassed,
@@ -370,6 +447,86 @@ internal object StrategyEvaluator {
         val weightedSum = components.sumOf { (score, weight) -> score * weight }
         val totalWeight = components.sumOf { it.second }.coerceAtLeast(0.0001)
         return (weightedSum / totalWeight).coerceIn(0.0, 1.0)
+    }
+
+    private fun forecastBiasScore(
+        forecastResearch: ForecastResearch,
+        bullish: Boolean
+    ): Double {
+        return when (forecastResearch.bias) {
+            TradeBias.NEUTRAL -> forecastResearch.stabilityScore * 0.25
+            TradeBias.BULLISH -> if (bullish) {
+                (forecastResearch.strengthScore * 0.70) + (forecastResearch.stabilityScore * 0.30)
+            } else {
+                0.0
+            }
+            TradeBias.BEARISH -> if (!bullish) {
+                (forecastResearch.strengthScore * 0.70) + (forecastResearch.stabilityScore * 0.30)
+            } else {
+                0.0
+            }
+        }.coerceIn(0.0, 1.0)
+    }
+
+    private fun forecastSupportScore(
+        forecastResearch: ForecastResearch,
+        bias: TradeBias
+    ): Double {
+        return when {
+            bias == TradeBias.NEUTRAL -> 0.0
+            forecastResearch.bias == TradeBias.NEUTRAL -> forecastResearch.stabilityScore * 0.35
+            forecastResearch.bias != bias -> {
+                ((1.0 - forecastResearch.stabilityScore) * 0.20).coerceIn(0.0, 0.20)
+            }
+            else -> {
+                (forecastResearch.strengthScore * 0.60) + (forecastResearch.stabilityScore * 0.40)
+            }
+        }.coerceIn(0.0, 1.0)
+    }
+
+    private fun buildTradePerformanceFeedback(
+        symbolCode: String,
+        timeframe: String,
+        closedTrades: List<ClosedTradeRecord>
+    ): TradePerformanceFeedback {
+        val recentTrades = closedTrades
+            .filter { it.symbolCode == symbolCode && it.timeframe == timeframe }
+            .sortedByDescending { it.closedAtEpochMillis }
+            .take(6)
+        if (recentTrades.isEmpty()) {
+            return TradePerformanceFeedback(
+                sampleSize = 0,
+                consecutiveLosses = 0,
+                recentWinRate = 0,
+                recentNetPnlUsd = 0.0,
+                strictModeActive = false,
+                summary = "No closed-trade history yet for $symbolCode $timeframe. The engine is relying on live structure only."
+            )
+        }
+
+        val consecutiveLosses = recentTrades.takeWhile { it.pnlUsd < 0.0 }.count()
+        val winRate = ((recentTrades.count { it.pnlUsd > 0.0 }.toDouble() / recentTrades.size) * 100.0).toInt()
+        val recentNetPnlUsd = recentTrades.sumOf { it.pnlUsd }
+        val averagePnlPercent = recentTrades.map { it.pnlPercent }.average()
+        val strictModeActive = recentTrades.size >= 3 && (
+            consecutiveLosses >= 2 ||
+                (winRate <= 34 && recentNetPnlUsd < 0.0) ||
+                averagePnlPercent <= -0.35
+        )
+        val summary = if (strictModeActive) {
+            "Recent $symbolCode $timeframe history is weak: $consecutiveLosses consecutive losses, $winRate% win rate, net ${formatSignedUsd(recentNetPnlUsd)}. Require cleaner setup quality before entry."
+        } else {
+            "Recent $symbolCode $timeframe history is stable enough: $winRate% win rate across ${recentTrades.size} trades with net ${formatSignedUsd(recentNetPnlUsd)}."
+        }
+
+        return TradePerformanceFeedback(
+            sampleSize = recentTrades.size,
+            consecutiveLosses = consecutiveLosses,
+            recentWinRate = winRate,
+            recentNetPnlUsd = recentNetPnlUsd,
+            strictModeActive = strictModeActive,
+            summary = summary
+        )
     }
 
     private fun buildConfluenceMetaScore(
@@ -389,6 +546,14 @@ internal object StrategyEvaluator {
         if (noiseScore >= 0.5 && timeframeScore >= 0.5) buckets += 1.0
         val diversityScore = (buckets / 4.0).coerceIn(0.0, 1.0)
         return ((diversityScore * 0.60) + (stackAlignment * 0.40)).coerceIn(0.0, 1.0)
+    }
+
+    private fun formatSignedUsd(value: Double): String {
+        return if (value >= 0.0) {
+            "+$${"%.2f".format(value)}"
+        } else {
+            "-$${"%.2f".format(abs(value))}"
+        }
     }
 
     private fun buildRiskPenalty(
@@ -424,6 +589,7 @@ internal object StrategyEvaluator {
 
     private fun buildRejectionReasons(
         mode: ConfirmationMode,
+        filterSettings: com.ex57.capital.model.SignalFilterSettings,
         hardBlock: Boolean,
         severeNoise: Boolean,
         severeNews: Boolean,
@@ -437,6 +603,9 @@ internal object StrategyEvaluator {
         topDownDirectionalThreshold: Double,
         directionalEdge: Double,
         directionalEdgeThreshold: Double,
+        forecastResearch: ForecastResearch,
+        forecastSupportScore: Double,
+        forecastThreshold: Double,
         setupStateAllowed: Boolean,
         setupQualityScore: Double,
         setupQualityThreshold: Double,
@@ -449,10 +618,11 @@ internal object StrategyEvaluator {
         stage: Int,
         expectancyValue: Double,
         approved: Boolean,
-        decision: TradeDecision
+        decision: TradeDecision,
+        performanceFeedback: TradePerformanceFeedback
     ): List<String> {
         val reasons = mutableListOf<String>()
-        if (hardBlock) {
+        if (filterSettings.enforceHardBlocks && hardBlock) {
             if (severeNoise) reasons += "Noise hard-blocked the setup for ${mode.label.lowercase()} mode."
             if (severeNews) reasons += "Event-volatility pulse is too high for immediate execution."
         }
@@ -468,26 +638,38 @@ internal object StrategyEvaluator {
         if (topDownDirectionalGate < topDownDirectionalThreshold) {
             reasons += "Higher-timeframe directional alignment is too weak."
         }
-        if (directionalEdge < directionalEdgeThreshold) {
+        if (filterSettings.requireDirectionalEdge && directionalEdge < directionalEdgeThreshold) {
             reasons += "Directional edge over the runner-up setup is too small."
         }
-        if (!setupStateAllowed) {
+        if (filterSettings.requireForecastSupport && forecastSupportScore < forecastThreshold) {
+            reasons += when (forecastResearch.bias) {
+                TradeBias.NEUTRAL -> "Forecast lane is too mixed to support an immediate entry."
+                else -> "Forecast lane disagrees with the setup or shows unstable path behavior."
+            }
+        }
+        if (filterSettings.requireSetupState && !setupStateAllowed) {
             reasons += "Current setup/trigger state is not valid for this mode."
         }
         if (setupQualityScore < setupQualityThreshold) {
             reasons += "Setup quality is below the minimum for execution."
         }
-        if (setupQualityCount < requiredSetupConfirmations) {
+        if (filterSettings.requireSetupConfirmations && setupQualityCount < requiredSetupConfirmations) {
             reasons += "Not enough setup confirmations are active yet."
         }
-        if (confluenceMetaScore < confluenceGate) {
+        if (filterSettings.requireConfluence && confluenceMetaScore < confluenceGate) {
             reasons += "Cross-factor confluence is too weak."
         }
-        if (riskPenalty > maxRiskPenalty) {
+        if (filterSettings.requireRiskPenalty && riskPenalty > maxRiskPenalty) {
             reasons += "Risk penalty is too high relative to the selected mode."
         }
-        if (stage >= 2 && expectancyValue <= 0.0) {
+        if (filterSettings.requireExpectancy && stage >= 2 && expectancyValue <= 0.0) {
             reasons += "Historical expectancy is not positive enough for approval."
+        }
+        if (performanceFeedback.strictModeActive) {
+            reasons += "Recent closed-trade history is weak here, so the next setup needs stronger confirmation before execution."
+        }
+        if (forecastResearch.stabilityScore < 0.35) {
+            reasons += "Recent path stability is weak, so the projected move is too noisy."
         }
         if (decision == TradeDecision.WATCHLIST && !approved) {
             reasons += "Setup is usable for monitoring, but not strong enough for immediate approval."

@@ -26,7 +26,8 @@ class DerivWebSocketClient(
     context: Context,
     private val appId: String = "1089"
 ) : MarketDataSource {
-    private val maxStoredTicks = 600
+    private val maxStoredTicks = 2_400
+    private val maxRequestedCandles = 480
     private val staleThresholdMillis = 15_000L
     private val reconnectThresholdMillis = 30_000L
     private val reconnectDelaysMillis = listOf(1_000L, 2_000L, 5_000L, 10_000L, 20_000L, 30_000L)
@@ -330,7 +331,7 @@ class DerivWebSocketClient(
             mapOf(
                 "ticks_history" to symbol,
                 "adjust_start_time" to 1,
-                "count" to 120,
+                "count" to maxRequestedCandles,
                 "end" to "latest",
                 "granularity" to timeframeToSeconds(timeframe),
                 "style" to "candles"

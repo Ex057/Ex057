@@ -80,7 +80,9 @@ class TradeMemoryStore(context: Context) {
         val safeFraction = fraction.coerceIn(0.05, 0.95)
         val closingStake = (target.stakeUsd * safeFraction).coerceAtLeast(0.0)
         val closingLots = (target.lotSize * safeFraction).coerceAtLeast(0.0)
-        if (closingStake <= 1.0 || closingLots <= 0.01) {
+        val remainingUsedMargin = (target.usedMarginUsd * (1.0 - safeFraction)).coerceAtLeast(0.0)
+        val remainingSpreadCost = (target.estimatedSpreadCostUsd * (1.0 - safeFraction)).coerceAtLeast(0.0)
+        if (closingStake <= 1.0 || closingLots <= MIN_LOT_SIZE) {
             val (remaining, history) = closePositionById(positionId, exitPrice, closedAtEpochMillis)
             return Triple(remaining, history, loadDemoBalance())
         }
@@ -89,10 +91,13 @@ class TradeMemoryStore(context: Context) {
             PositionSide.LONG -> ((exitPrice - target.entryPrice) / target.entryPrice) * 100.0
             PositionSide.SHORT -> ((target.entryPrice - exitPrice) / target.entryPrice) * 100.0
         }
-        val realizedUsd = closingStake * (pnlPercent / 100.0)
+        val realizedUsd = (closingStake * (pnlPercent / 100.0)) - (target.estimatedSpreadCostUsd * safeFraction)
+        val realizedPercent = if (closingStake <= 0.0) 0.0 else (realizedUsd / closingStake) * 100.0
         val updatedPosition = target.copy(
-            lotSize = (target.lotSize - closingLots).coerceAtLeast(0.01),
+            lotSize = (target.lotSize - closingLots).coerceAtLeast(MIN_LOT_SIZE),
             stakeUsd = (target.stakeUsd - closingStake).coerceAtLeast(1.0),
+            usedMarginUsd = remainingUsedMargin,
+            estimatedSpreadCostUsd = remainingSpreadCost,
             realizedPnlUsd = target.realizedPnlUsd + realizedUsd
         )
         val remaining = updateOpenPosition(updatedPosition)
@@ -113,7 +118,7 @@ class TradeMemoryStore(context: Context) {
             closedAtEpochMillis = closedAtEpochMillis,
             outcomeLabel = "Partial Close",
             pnlUsd = realizedUsd,
-            pnlPercent = pnlPercent,
+            pnlPercent = realizedPercent,
             rationale = target.rationale
         )
         val updatedHistory = listOf(partialTrade) + loadClosedTrades()
@@ -152,7 +157,7 @@ class TradeMemoryStore(context: Context) {
             PositionSide.LONG -> ((exitPrice - target.entryPrice) / target.entryPrice) * 100.0
             PositionSide.SHORT -> ((target.entryPrice - exitPrice) / target.entryPrice) * 100.0
         }
-        val remainingPnlUsd = target.stakeUsd * (remainingPnlPercent / 100.0)
+        val remainingPnlUsd = (target.stakeUsd * (remainingPnlPercent / 100.0)) - target.estimatedSpreadCostUsd
         val totalPnlUsd = target.realizedPnlUsd + remainingPnlUsd
         val pnlPercent = if (target.initialStakeUsd <= 0.0) {
             0.0
@@ -244,6 +249,8 @@ class TradeMemoryStore(context: Context) {
             .put("initialLotSize", position.initialLotSize)
             .put("stakeUsd", position.stakeUsd)
             .put("initialStakeUsd", position.initialStakeUsd)
+            .put("usedMarginUsd", position.usedMarginUsd)
+            .put("estimatedSpreadCostUsd", position.estimatedSpreadCostUsd)
             .put("entryPrice", position.entryPrice)
             .put("stopLoss", position.stopLoss)
             .put("takeProfit", position.takeProfit)
@@ -267,6 +274,8 @@ class TradeMemoryStore(context: Context) {
                 initialLotSize = json.optDoubleOrNull("initialLotSize") ?: (json.optDoubleOrNull("lotSize") ?: defaultLotSizeFor(json.optDoubleOrNull("stakeUsd") ?: DEFAULT_STAKE_USD)),
                 stakeUsd = json.optDoubleOrNull("stakeUsd") ?: DEFAULT_STAKE_USD,
                 initialStakeUsd = json.optDoubleOrNull("initialStakeUsd") ?: (json.optDoubleOrNull("stakeUsd") ?: DEFAULT_STAKE_USD),
+                usedMarginUsd = json.optDoubleOrNull("usedMarginUsd") ?: ((json.optDoubleOrNull("stakeUsd") ?: DEFAULT_STAKE_USD) * 0.10),
+                estimatedSpreadCostUsd = json.optDoubleOrNull("estimatedSpreadCostUsd") ?: 0.0,
                 entryPrice = json.getDouble("entryPrice"),
                 stopLoss = json.optDoubleOrNull("stopLoss"),
                 takeProfit = json.optDoubleOrNull("takeProfit"),
@@ -332,6 +341,8 @@ class TradeMemoryStore(context: Context) {
             .put("side", order.side.name)
             .put("lotSize", order.lotSize)
             .put("stakeUsd", order.stakeUsd)
+            .put("usedMarginUsd", order.usedMarginUsd)
+            .put("estimatedSpreadCostUsd", order.estimatedSpreadCostUsd)
             .put("targetEntryPrice", order.targetEntryPrice)
             .put("stopLoss", order.stopLoss)
             .put("takeProfit", order.takeProfit)
@@ -349,6 +360,8 @@ class TradeMemoryStore(context: Context) {
                 side = PositionSide.valueOf(json.getString("side")),
                 lotSize = json.optDoubleOrNull("lotSize") ?: defaultLotSizeFor(json.optDoubleOrNull("stakeUsd") ?: DEFAULT_STAKE_USD),
                 stakeUsd = json.optDoubleOrNull("stakeUsd") ?: DEFAULT_STAKE_USD,
+                usedMarginUsd = json.optDoubleOrNull("usedMarginUsd") ?: ((json.optDoubleOrNull("stakeUsd") ?: DEFAULT_STAKE_USD) * 0.10),
+                estimatedSpreadCostUsd = json.optDoubleOrNull("estimatedSpreadCostUsd") ?: 0.0,
                 targetEntryPrice = json.getDouble("targetEntryPrice"),
                 stopLoss = json.optDoubleOrNull("stopLoss"),
                 takeProfit = json.optDoubleOrNull("takeProfit"),
@@ -376,6 +389,6 @@ class TradeMemoryStore(context: Context) {
         private const val DEFAULT_DEMO_BALANCE = 10_000.0
         private const val DEFAULT_STAKE_USD = 1_000.0
         private const val STAKE_PER_LOT_USD = 10_000.0
-        private const val MIN_LOT_SIZE = 0.01
+        private const val MIN_LOT_SIZE = 0.001
     }
 }

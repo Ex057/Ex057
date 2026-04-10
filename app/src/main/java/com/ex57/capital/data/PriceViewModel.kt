@@ -13,6 +13,7 @@ import com.ex57.capital.model.PositionSide
 import com.ex57.capital.model.TradeBias
 import com.ex57.capital.model.TradePosition
 import com.ex57.capital.model.TradingSymbol
+import com.ex57.capital.analysis.PositionSizingEngine
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -126,18 +127,25 @@ class PriceViewModel(application: Application) : AndroidViewModel(application) {
             TradeBias.NEUTRAL -> return false
         }
         val entryPrice = executionPrice ?: analysisResult.tradeSetup.entry ?: return false
-        val normalizedLotSize = lotSize.coerceIn(0.01, 50.0)
-        val stakeUsd = (normalizedLotSize * 10_000.0).coerceAtMost(_demoBalance.value * 2.0)
+        val sizingQuote = PositionSizingEngine.quote(
+            symbol = symbol,
+            entryPrice = entryPrice,
+            stopLoss = analysisResult.tradeSetup.stopLoss,
+            requestedLot = lotSize
+        )
+        if (sizingQuote.usedMarginUsd > _demoBalance.value * 0.95) return false
         val position = TradePosition(
             id = tradeMemoryStore.newPositionId(),
             symbolCode = symbol.code,
             derivSymbol = symbol.derivSymbol,
             timeframe = timeframe,
             side = side,
-            lotSize = normalizedLotSize,
-            initialLotSize = normalizedLotSize,
-            stakeUsd = stakeUsd,
-            initialStakeUsd = stakeUsd,
+            lotSize = sizingQuote.normalizedLotSize,
+            initialLotSize = sizingQuote.normalizedLotSize,
+            stakeUsd = sizingQuote.notionalUsd,
+            initialStakeUsd = sizingQuote.notionalUsd,
+            usedMarginUsd = sizingQuote.usedMarginUsd,
+            estimatedSpreadCostUsd = sizingQuote.estimatedSpreadCostUsd,
             entryPrice = entryPrice,
             stopLoss = analysisResult.tradeSetup.stopLoss,
             takeProfit = analysisResult.tradeSetup.takeProfit,
@@ -162,16 +170,23 @@ class PriceViewModel(application: Application) : AndroidViewModel(application) {
             TradeBias.NEUTRAL -> return false
         }
         val entryPrice = analysisResult.tradeSetup.entry ?: return false
-        val normalizedLotSize = lotSize.coerceIn(0.01, 50.0)
-        val stakeUsd = (normalizedLotSize * 10_000.0).coerceAtMost(_demoBalance.value * 2.0)
+        val sizingQuote = PositionSizingEngine.quote(
+            symbol = symbol,
+            entryPrice = entryPrice,
+            stopLoss = analysisResult.tradeSetup.stopLoss,
+            requestedLot = lotSize
+        )
+        if (sizingQuote.usedMarginUsd > _demoBalance.value * 0.95) return false
         val order = PendingTradeOrder(
             id = tradeMemoryStore.newPositionId(),
             symbolCode = symbol.code,
             derivSymbol = symbol.derivSymbol,
             timeframe = timeframe,
             side = side,
-            lotSize = normalizedLotSize,
-            stakeUsd = stakeUsd,
+            lotSize = sizingQuote.normalizedLotSize,
+            stakeUsd = sizingQuote.notionalUsd,
+            usedMarginUsd = sizingQuote.usedMarginUsd,
+            estimatedSpreadCostUsd = sizingQuote.estimatedSpreadCostUsd,
             targetEntryPrice = entryPrice,
             stopLoss = analysisResult.tradeSetup.stopLoss,
             takeProfit = analysisResult.tradeSetup.takeProfit,
@@ -249,6 +264,8 @@ class PriceViewModel(application: Application) : AndroidViewModel(application) {
                 initialLotSize = order.lotSize,
                 stakeUsd = order.stakeUsd,
                 initialStakeUsd = order.stakeUsd,
+                usedMarginUsd = order.usedMarginUsd,
+                estimatedSpreadCostUsd = order.estimatedSpreadCostUsd,
                 entryPrice = order.targetEntryPrice,
                 stopLoss = order.stopLoss,
                 takeProfit = order.takeProfit,
@@ -340,9 +357,12 @@ class PriceViewModel(application: Application) : AndroidViewModel(application) {
             3 -> 0.50
             else -> 0.0
         }
-        val realizedDelta = (position.stakeUsd * scaleFraction) * (positionPnlPercent(position, latestPrice) / 100.0)
+        val realizedDelta = ((position.stakeUsd * scaleFraction) * (positionPnlPercent(position, latestPrice) / 100.0)) -
+            (position.estimatedSpreadCostUsd * scaleFraction)
         val remainingStake = (position.stakeUsd * (1.0 - scaleFraction)).coerceAtLeast(0.0)
         val remainingLot = (position.lotSize * (1.0 - scaleFraction)).coerceAtLeast(0.0)
+        val remainingUsedMargin = (position.usedMarginUsd * (1.0 - scaleFraction)).coerceAtLeast(0.0)
+        val remainingSpreadCost = (position.estimatedSpreadCostUsd * (1.0 - scaleFraction)).coerceAtLeast(0.0)
 
         val adjustedStopLoss = when (nextStage) {
             1 -> position.entryPrice
@@ -357,7 +377,7 @@ class PriceViewModel(application: Application) : AndroidViewModel(application) {
             else -> position.stopLoss
         }
 
-        if (remainingStake <= 1.0 || remainingLot <= 0.01) {
+        if (remainingStake <= 1.0 || remainingLot <= 0.001) {
             val (openPositions, closedTrades) = tradeMemoryStore.closePositionById(
                 positionId = position.id,
                 exitPrice = latestPrice,
@@ -372,6 +392,8 @@ class PriceViewModel(application: Application) : AndroidViewModel(application) {
         val updatedPosition = position.copy(
             lotSize = remainingLot,
             stakeUsd = remainingStake,
+            usedMarginUsd = remainingUsedMargin,
+            estimatedSpreadCostUsd = remainingSpreadCost,
             stopLoss = adjustedStopLoss,
             realizedPnlUsd = position.realizedPnlUsd + realizedDelta,
             managementStage = nextStage

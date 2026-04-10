@@ -19,9 +19,9 @@ internal object RiskManager {
             evaluation.bias == TradeBias.NEUTRAL ->
                 "${symbol.code} is range-bound on ${input.timeframe}. The model sees mixed pressure, so it is better to wait."
             evaluation.approved ->
-                "${evaluation.setupType.label} ${evaluation.bias.label.lowercase()} setup is active on ${input.timeframe}. Top-down confluence is aligned and the weighted score clears ${input.mode.label.lowercase()} mode."
+                "${evaluation.setupType.label} ${evaluation.bias.label.lowercase()} setup is active on ${input.timeframe}. Top-down confluence, forecast drift, and weighted score clear ${input.mode.label.lowercase()} mode."
             else ->
-                "${evaluation.setupType.label} ${evaluation.bias.label.lowercase()} pressure exists, but top-down confluence is still below the ${input.mode.label.lowercase()} activation threshold."
+                "${evaluation.setupType.label} ${evaluation.bias.label.lowercase()} pressure exists, but the market still needs cleaner confluence or forecast agreement before execution."
         }
 
         val executionPlan = when (evaluation.setupType) {
@@ -39,8 +39,16 @@ internal object RiskManager {
         }
 
         val riskNote = when {
+            input.signalFilters.hasOverrides() ->
+                "${input.signalFilters.summary()} Treat this run as a testing configuration, not a production-ready filter set."
+            evaluation.performanceFeedback.strictModeActive ->
+                evaluation.performanceFeedback.summary
             features.noiseScore == 0.0 ->
                 "Noise is elevated for ${input.timeframe}. Expect more fakeouts and wider stop placement."
+            evaluation.forecastResearch.bias == TradeBias.NEUTRAL ->
+                "Forecast lane is mixed. Treat the current setup as exploratory until the next path becomes clearer."
+            evaluation.forecastResearch.stabilityScore < 0.40 ->
+                "Projected path stability is weak. Entries need extra patience because the regime is still unstable."
             features.topDown.confluenceScore < 0.5 ->
                 "Top-down confluence is weak. Treat this as a developing idea until structure and liquidity align."
             features.newsPulse.pulseScore >= 1.2 ->
@@ -54,6 +62,7 @@ internal object RiskManager {
         }
 
         val tradeSetup = buildTradeSetup(
+            symbol = symbol,
             mode = input.mode,
             setupType = evaluation.setupType,
             bias = evaluation.bias,
@@ -61,12 +70,14 @@ internal object RiskManager {
             last = features.last,
             averageStep = features.averageStep,
             noiseRatio = features.noiseRatio,
-            noiseCeiling = features.noiseCeiling
+            noiseCeiling = features.noiseCeiling,
+            supportLevel = features.topDown.supportLevel,
+            resistanceLevel = features.topDown.resistanceLevel
         ).copy(shouldTrade = evaluation.decision == TradeDecision.ELIGIBLE)
 
         val traderGuidance = when (evaluation.decision) {
             TradeDecision.ELIGIBLE ->
-                "Eligible setup. Wait for price to approach the planned entry, then execute only if the ${evaluation.setupType.label.lowercase()} structure still holds at candle close."
+                "Eligible setup. Wait for price to approach the planned entry, then execute only if the ${evaluation.setupType.label.lowercase()} structure and forecast drift still hold at candle close."
             TradeDecision.WATCHLIST ->
                 "Watchlist only. ${evaluation.rejectionReasons.firstOrNull() ?: "Supportive scores or staged evidence are not strong enough for immediate execution."}"
             TradeDecision.REJECT ->
@@ -102,11 +113,14 @@ internal object RiskManager {
             evidence = features.evidence,
             setupType = evaluation.setupType,
             nextTrigger = nextTrigger,
-            mtfaStatus = AnalysisSupport.buildMtfaStatus(features.topDown)
+            mtfaStatus = AnalysisSupport.buildMtfaStatus(features.topDown),
+            forecastResearch = evaluation.forecastResearch,
+            performanceFeedback = evaluation.performanceFeedback
         )
     }
 
     private fun buildTradeSetup(
+        symbol: TradingSymbol,
         mode: ConfirmationMode,
         setupType: SetupType,
         bias: TradeBias,
@@ -114,34 +128,59 @@ internal object RiskManager {
         last: Double,
         averageStep: Double,
         noiseRatio: Double,
-        noiseCeiling: Double
+        noiseCeiling: Double,
+        supportLevel: Double?,
+        resistanceLevel: Double?
     ): TradeSetup {
-        val baseRisk = (averageStep * (2.0 + (noiseRatio / noiseCeiling).coerceAtMost(1.2))).coerceAtLeast(last * 0.0015)
+        val spreadBuffer = maxOf(symbol.spec.typicalSpread * 1.1, averageStep * 0.18)
+        val baseRisk = (
+            averageStep * (2.0 + (noiseRatio / noiseCeiling).coerceAtMost(1.2))
+            ).coerceAtLeast(maxOf(last * 0.0015, spreadBuffer * 2.5))
         val rewardMultiplier = AnalysisSupport.configFor(mode).rewardMultiplier
         val setupAdjustment = if (setupType == SetupType.BREAKOUT) 1.15 else 1.0
 
         return when (bias) {
             TradeBias.BULLISH -> {
-                val entry = if (setupType == SetupType.BREAKOUT) last + (averageStep * 0.12) else last - (averageStep * 0.25)
-                val stopLoss = entry - (baseRisk * setupAdjustment)
-                val takeProfit = entry + (baseRisk * rewardMultiplier * setupAdjustment)
+                val entry = if (setupType == SetupType.BREAKOUT) {
+                    last + (averageStep * 0.12) + spreadBuffer
+                } else {
+                    last - (averageStep * 0.25) + (spreadBuffer * 0.35)
+                }
+                val projectedStop = entry - (baseRisk * setupAdjustment)
+                val structuralStop = supportLevel?.minus(spreadBuffer)?.takeIf { it < entry }
+                val stopLoss = listOfNotNull(projectedStop, structuralStop).minOrNull() ?: projectedStop
+                val projectedTarget = entry + (baseRisk * rewardMultiplier * setupAdjustment)
+                val structuralTarget = resistanceLevel
+                    ?.minus(spreadBuffer * 0.35)
+                    ?.takeIf { it > entry + spreadBuffer }
+                val takeProfit = structuralTarget ?: projectedTarget
                 TradeSetup(
                     entry = entry,
                     stopLoss = stopLoss,
                     takeProfit = takeProfit,
-                    riskReward = "1:${"%.1f".format(rewardMultiplier * setupAdjustment)}",
+                    riskReward = formatRiskReward(entry = entry, stopLoss = stopLoss, takeProfit = takeProfit),
                     shouldTrade = approved
                 )
             }
             TradeBias.BEARISH -> {
-                val entry = if (setupType == SetupType.BREAKOUT) last - (averageStep * 0.12) else last + (averageStep * 0.25)
-                val stopLoss = entry + (baseRisk * setupAdjustment)
-                val takeProfit = entry - (baseRisk * rewardMultiplier * setupAdjustment)
+                val entry = if (setupType == SetupType.BREAKOUT) {
+                    last - (averageStep * 0.12) - spreadBuffer
+                } else {
+                    last + (averageStep * 0.25) - (spreadBuffer * 0.35)
+                }
+                val projectedStop = entry + (baseRisk * setupAdjustment)
+                val structuralStop = resistanceLevel?.plus(spreadBuffer)?.takeIf { it > entry }
+                val stopLoss = listOfNotNull(projectedStop, structuralStop).maxOrNull() ?: projectedStop
+                val projectedTarget = entry - (baseRisk * rewardMultiplier * setupAdjustment)
+                val structuralTarget = supportLevel
+                    ?.plus(spreadBuffer * 0.35)
+                    ?.takeIf { it < entry - spreadBuffer }
+                val takeProfit = structuralTarget ?: projectedTarget
                 TradeSetup(
                     entry = entry,
                     stopLoss = stopLoss,
                     takeProfit = takeProfit,
-                    riskReward = "1:${"%.1f".format(rewardMultiplier * setupAdjustment)}",
+                    riskReward = formatRiskReward(entry = entry, stopLoss = stopLoss, takeProfit = takeProfit),
                     shouldTrade = approved
                 )
             }
@@ -153,5 +192,15 @@ internal object RiskManager {
                 shouldTrade = false
             )
         }
+    }
+
+    private fun formatRiskReward(
+        entry: Double,
+        stopLoss: Double,
+        takeProfit: Double
+    ): String {
+        val risk = kotlin.math.abs(entry - stopLoss).coerceAtLeast(0.00001)
+        val reward = kotlin.math.abs(takeProfit - entry)
+        return "1:${"%.1f".format(reward / risk)}"
     }
 }
