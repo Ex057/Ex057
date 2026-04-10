@@ -31,6 +31,21 @@ enum class ConfirmationMode(
     LENIENT("Lenient", 3, "Three credible confirmations", "Earliest entries, loosest filtering")
 }
 
+data class ModeConfig(
+    val minimumCoreRequired: Int,
+    val biasActivationThreshold: Double,
+    val topDownDirectionalThreshold: Double,
+    val confluenceGate: Double,
+    val directionalStrengthThreshold: Double,
+    val setupQualityThreshold: Double,
+    val breakoutSetupQualityAdjustment: Double,
+    val requiredSetupConfirmations: Int,
+    val maxRiskPenalty: Double,
+    val directionalEdgeThreshold: Double,
+    val supportThreshold: Double,
+    val rewardMultiplier: Double
+)
+
 data class Confirmation(
     val name: String,
     val passed: Boolean,
@@ -105,6 +120,7 @@ data class AnalysisResult(
     val tradeSetup: TradeSetup,
     val traderGuidance: String,
     val decision: TradeDecision,
+    val rejectionReasons: List<String>,
     val evidence: EvidenceSnapshot,
     val setupType: SetupType,
     val nextTrigger: String,
@@ -127,6 +143,21 @@ data class TradeSetup(
     val shouldTrade: Boolean
 )
 
+data class PendingTradeOrder(
+    val id: String,
+    val symbolCode: String,
+    val derivSymbol: String,
+    val timeframe: String,
+    val side: PositionSide,
+    val lotSize: Double,
+    val stakeUsd: Double,
+    val targetEntryPrice: Double,
+    val stopLoss: Double?,
+    val takeProfit: Double?,
+    val createdAtEpochMillis: Long,
+    val note: String
+)
+
 data class EvidenceSnapshot(
     val winRate: Int,
     val profitFactor: String,
@@ -146,14 +177,19 @@ data class TradePosition(
     val derivSymbol: String,
     val timeframe: String,
     val side: PositionSide,
+    val lotSize: Double,
+    val initialLotSize: Double,
     val stakeUsd: Double,
+    val initialStakeUsd: Double,
     val entryPrice: Double,
     val stopLoss: Double?,
     val takeProfit: Double?,
     val openedAtEpochMillis: Long,
     val setupType: SetupType,
     val rationale: String,
-    val confidence: Int
+    val confidence: Int,
+    val realizedPnlUsd: Double = 0.0,
+    val managementStage: Int = 0
 )
 
 data class ClosedTradeRecord(
@@ -161,6 +197,7 @@ data class ClosedTradeRecord(
     val symbolCode: String,
     val timeframe: String,
     val side: PositionSide,
+    val lotSize: Double,
     val stakeUsd: Double,
     val entryPrice: Double,
     val exitPrice: Double,

@@ -2,6 +2,7 @@ package com.ex57.capital.data
 
 import android.content.Context
 import com.ex57.capital.model.ClosedTradeRecord
+import com.ex57.capital.model.PendingTradeOrder
 import com.ex57.capital.model.PositionSide
 import com.ex57.capital.model.SetupType
 import com.ex57.capital.model.TradePosition
@@ -24,13 +25,100 @@ class TradeMemoryStore(context: Context) {
         return readArray(KEY_CLOSED_TRADES).mapNotNull(::closedTradeFromJson)
     }
 
+    fun loadPendingOrders(): List<PendingTradeOrder> {
+        return readArray(KEY_PENDING_ORDERS).mapNotNull(::pendingOrderFromJson)
+    }
+
     fun upsertOpenPosition(position: TradePosition): List<TradePosition> {
         val updated = loadOpenPositions()
-            .filterNot { it.symbolCode == position.symbolCode && it.timeframe == position.timeframe }
+            .filterNot { it.id == position.id }
             .plus(position)
             .sortedByDescending { it.openedAtEpochMillis }
         saveOpenPositions(updated)
         return updated
+    }
+
+    fun updateOpenPosition(position: TradePosition): List<TradePosition> {
+        val updated = loadOpenPositions()
+            .map { existing -> if (existing.id == position.id) position else existing }
+            .sortedByDescending { it.openedAtEpochMillis }
+        saveOpenPositions(updated)
+        return updated
+    }
+
+    fun applyManagedUpdate(position: TradePosition, realizedDeltaUsd: Double): Pair<List<TradePosition>, Double> {
+        val updatedPositions = upsertOpenPosition(position)
+        val updatedBalance = loadDemoBalance() + realizedDeltaUsd
+        saveDemoBalance(updatedBalance)
+        return updatedPositions to updatedBalance
+    }
+
+    fun savePendingOrder(order: PendingTradeOrder): List<PendingTradeOrder> {
+        val updated = loadPendingOrders()
+            .filterNot { it.id == order.id }
+            .plus(order)
+            .sortedByDescending { it.createdAtEpochMillis }
+        savePendingOrders(updated)
+        return updated
+    }
+
+    fun removePendingOrder(orderId: String): List<PendingTradeOrder> {
+        val updated = loadPendingOrders().filterNot { it.id == orderId }
+        savePendingOrders(updated)
+        return updated
+    }
+
+    fun partialClosePositionById(
+        positionId: String,
+        exitPrice: Double,
+        closedAtEpochMillis: Long,
+        fraction: Double
+    ): Triple<List<TradePosition>, List<ClosedTradeRecord>, Double> {
+        val openPositions = loadOpenPositions()
+        val target = openPositions.firstOrNull { it.id == positionId }
+            ?: return Triple(openPositions, loadClosedTrades(), loadDemoBalance())
+        val safeFraction = fraction.coerceIn(0.05, 0.95)
+        val closingStake = (target.stakeUsd * safeFraction).coerceAtLeast(0.0)
+        val closingLots = (target.lotSize * safeFraction).coerceAtLeast(0.0)
+        if (closingStake <= 1.0 || closingLots <= 0.01) {
+            val (remaining, history) = closePositionById(positionId, exitPrice, closedAtEpochMillis)
+            return Triple(remaining, history, loadDemoBalance())
+        }
+
+        val pnlPercent = when (target.side) {
+            PositionSide.LONG -> ((exitPrice - target.entryPrice) / target.entryPrice) * 100.0
+            PositionSide.SHORT -> ((target.entryPrice - exitPrice) / target.entryPrice) * 100.0
+        }
+        val realizedUsd = closingStake * (pnlPercent / 100.0)
+        val updatedPosition = target.copy(
+            lotSize = (target.lotSize - closingLots).coerceAtLeast(0.01),
+            stakeUsd = (target.stakeUsd - closingStake).coerceAtLeast(1.0),
+            realizedPnlUsd = target.realizedPnlUsd + realizedUsd
+        )
+        val remaining = updateOpenPosition(updatedPosition)
+        val updatedBalance = loadDemoBalance() + realizedUsd
+        saveDemoBalance(updatedBalance)
+        val partialTrade = ClosedTradeRecord(
+            id = "${target.id}-partial-$closedAtEpochMillis",
+            symbolCode = target.symbolCode,
+            timeframe = target.timeframe,
+            side = target.side,
+            lotSize = closingLots,
+            stakeUsd = closingStake,
+            entryPrice = target.entryPrice,
+            exitPrice = exitPrice,
+            stopLoss = target.stopLoss,
+            takeProfit = target.takeProfit,
+            openedAtEpochMillis = target.openedAtEpochMillis,
+            closedAtEpochMillis = closedAtEpochMillis,
+            outcomeLabel = "Partial Close",
+            pnlUsd = realizedUsd,
+            pnlPercent = pnlPercent,
+            rationale = target.rationale
+        )
+        val updatedHistory = listOf(partialTrade) + loadClosedTrades()
+        saveClosedTrades(updatedHistory.take(MAX_CLOSED_TRADES))
+        return Triple(remaining, updatedHistory.take(MAX_CLOSED_TRADES), updatedBalance)
     }
 
     fun closePosition(
@@ -43,12 +131,34 @@ class TradeMemoryStore(context: Context) {
         val target = openPositions.firstOrNull { it.symbolCode == symbolCode && it.timeframe == timeframe }
             ?: return openPositions to loadClosedTrades()
 
+        return closePositionById(
+            positionId = target.id,
+            exitPrice = exitPrice,
+            closedAtEpochMillis = closedAtEpochMillis
+        )
+    }
+
+    fun closePositionById(
+        positionId: String,
+        exitPrice: Double,
+        closedAtEpochMillis: Long
+    ): Pair<List<TradePosition>, List<ClosedTradeRecord>> {
+        val openPositions = loadOpenPositions()
+        val target = openPositions.firstOrNull { it.id == positionId }
+            ?: return openPositions to loadClosedTrades()
+
         val remaining = openPositions.filterNot { it.id == target.id }
-        val pnlPercent = when (target.side) {
+        val remainingPnlPercent = when (target.side) {
             PositionSide.LONG -> ((exitPrice - target.entryPrice) / target.entryPrice) * 100.0
             PositionSide.SHORT -> ((target.entryPrice - exitPrice) / target.entryPrice) * 100.0
         }
-        val pnlUsd = target.stakeUsd * (pnlPercent / 100.0)
+        val remainingPnlUsd = target.stakeUsd * (remainingPnlPercent / 100.0)
+        val totalPnlUsd = target.realizedPnlUsd + remainingPnlUsd
+        val pnlPercent = if (target.initialStakeUsd <= 0.0) {
+            0.0
+        } else {
+            (totalPnlUsd / target.initialStakeUsd) * 100.0
+        }
         val outcomeLabel = when {
             target.takeProfit != null && (
                 (target.side == PositionSide.LONG && exitPrice >= target.takeProfit) ||
@@ -67,7 +177,8 @@ class TradeMemoryStore(context: Context) {
             symbolCode = target.symbolCode,
             timeframe = target.timeframe,
             side = target.side,
-            stakeUsd = target.stakeUsd,
+            lotSize = target.initialLotSize,
+            stakeUsd = target.initialStakeUsd,
             entryPrice = target.entryPrice,
             exitPrice = exitPrice,
             stopLoss = target.stopLoss,
@@ -75,13 +186,13 @@ class TradeMemoryStore(context: Context) {
             openedAtEpochMillis = target.openedAtEpochMillis,
             closedAtEpochMillis = closedAtEpochMillis,
             outcomeLabel = outcomeLabel,
-            pnlUsd = pnlUsd,
+            pnlUsd = totalPnlUsd,
             pnlPercent = pnlPercent,
             rationale = target.rationale
         )
 
         val history = listOf(closedTrade) + loadClosedTrades()
-        val updatedBalance = loadDemoBalance() + pnlUsd
+        val updatedBalance = loadDemoBalance() + remainingPnlUsd
         saveOpenPositions(remaining)
         saveClosedTrades(history.take(MAX_CLOSED_TRADES))
         saveDemoBalance(updatedBalance)
@@ -96,6 +207,10 @@ class TradeMemoryStore(context: Context) {
 
     private fun saveClosedTrades(trades: List<ClosedTradeRecord>) {
         saveArray(KEY_CLOSED_TRADES, trades.map(::closedTradeToJson))
+    }
+
+    private fun savePendingOrders(orders: List<PendingTradeOrder>) {
+        saveArray(KEY_PENDING_ORDERS, orders.map(::pendingOrderToJson))
     }
 
     private fun saveDemoBalance(balance: Double) {
@@ -125,7 +240,10 @@ class TradeMemoryStore(context: Context) {
             .put("derivSymbol", position.derivSymbol)
             .put("timeframe", position.timeframe)
             .put("side", position.side.name)
+            .put("lotSize", position.lotSize)
+            .put("initialLotSize", position.initialLotSize)
             .put("stakeUsd", position.stakeUsd)
+            .put("initialStakeUsd", position.initialStakeUsd)
             .put("entryPrice", position.entryPrice)
             .put("stopLoss", position.stopLoss)
             .put("takeProfit", position.takeProfit)
@@ -133,6 +251,8 @@ class TradeMemoryStore(context: Context) {
             .put("setupType", position.setupType.name)
             .put("rationale", position.rationale)
             .put("confidence", position.confidence)
+            .put("realizedPnlUsd", position.realizedPnlUsd)
+            .put("managementStage", position.managementStage)
     }
 
     private fun positionFromJson(json: JSONObject): TradePosition? {
@@ -143,14 +263,19 @@ class TradeMemoryStore(context: Context) {
                 derivSymbol = json.optString("derivSymbol"),
                 timeframe = json.getString("timeframe"),
                 side = PositionSide.valueOf(json.getString("side")),
+                lotSize = json.optDoubleOrNull("lotSize") ?: defaultLotSizeFor(json.optDoubleOrNull("stakeUsd") ?: DEFAULT_STAKE_USD),
+                initialLotSize = json.optDoubleOrNull("initialLotSize") ?: (json.optDoubleOrNull("lotSize") ?: defaultLotSizeFor(json.optDoubleOrNull("stakeUsd") ?: DEFAULT_STAKE_USD)),
                 stakeUsd = json.optDoubleOrNull("stakeUsd") ?: DEFAULT_STAKE_USD,
+                initialStakeUsd = json.optDoubleOrNull("initialStakeUsd") ?: (json.optDoubleOrNull("stakeUsd") ?: DEFAULT_STAKE_USD),
                 entryPrice = json.getDouble("entryPrice"),
                 stopLoss = json.optDoubleOrNull("stopLoss"),
                 takeProfit = json.optDoubleOrNull("takeProfit"),
                 openedAtEpochMillis = json.getLong("openedAtEpochMillis"),
                 setupType = SetupType.valueOf(json.getString("setupType")),
                 rationale = json.optString("rationale"),
-                confidence = json.optInt("confidence")
+                confidence = json.optInt("confidence"),
+                realizedPnlUsd = json.optDoubleOrNull("realizedPnlUsd") ?: 0.0,
+                managementStage = json.optInt("managementStage", 0)
             )
         }.getOrNull()
     }
@@ -161,6 +286,7 @@ class TradeMemoryStore(context: Context) {
             .put("symbolCode", trade.symbolCode)
             .put("timeframe", trade.timeframe)
             .put("side", trade.side.name)
+            .put("lotSize", trade.lotSize)
             .put("stakeUsd", trade.stakeUsd)
             .put("entryPrice", trade.entryPrice)
             .put("exitPrice", trade.exitPrice)
@@ -181,6 +307,7 @@ class TradeMemoryStore(context: Context) {
                 symbolCode = json.getString("symbolCode"),
                 timeframe = json.getString("timeframe"),
                 side = PositionSide.valueOf(json.getString("side")),
+                lotSize = json.optDoubleOrNull("lotSize") ?: defaultLotSizeFor(json.optDoubleOrNull("stakeUsd") ?: DEFAULT_STAKE_USD),
                 stakeUsd = json.optDoubleOrNull("stakeUsd") ?: DEFAULT_STAKE_USD,
                 entryPrice = json.getDouble("entryPrice"),
                 exitPrice = json.getDouble("exitPrice"),
@@ -196,17 +323,59 @@ class TradeMemoryStore(context: Context) {
         }.getOrNull()
     }
 
+    private fun pendingOrderToJson(order: PendingTradeOrder): JSONObject {
+        return JSONObject()
+            .put("id", order.id)
+            .put("symbolCode", order.symbolCode)
+            .put("derivSymbol", order.derivSymbol)
+            .put("timeframe", order.timeframe)
+            .put("side", order.side.name)
+            .put("lotSize", order.lotSize)
+            .put("stakeUsd", order.stakeUsd)
+            .put("targetEntryPrice", order.targetEntryPrice)
+            .put("stopLoss", order.stopLoss)
+            .put("takeProfit", order.takeProfit)
+            .put("createdAtEpochMillis", order.createdAtEpochMillis)
+            .put("note", order.note)
+    }
+
+    private fun pendingOrderFromJson(json: JSONObject): PendingTradeOrder? {
+        return runCatching {
+            PendingTradeOrder(
+                id = json.getString("id"),
+                symbolCode = json.getString("symbolCode"),
+                derivSymbol = json.optString("derivSymbol"),
+                timeframe = json.getString("timeframe"),
+                side = PositionSide.valueOf(json.getString("side")),
+                lotSize = json.optDoubleOrNull("lotSize") ?: defaultLotSizeFor(json.optDoubleOrNull("stakeUsd") ?: DEFAULT_STAKE_USD),
+                stakeUsd = json.optDoubleOrNull("stakeUsd") ?: DEFAULT_STAKE_USD,
+                targetEntryPrice = json.getDouble("targetEntryPrice"),
+                stopLoss = json.optDoubleOrNull("stopLoss"),
+                takeProfit = json.optDoubleOrNull("takeProfit"),
+                createdAtEpochMillis = json.getLong("createdAtEpochMillis"),
+                note = json.optString("note")
+            )
+        }.getOrNull()
+    }
+
     private fun JSONObject.optDoubleOrNull(key: String): Double? {
         return if (isNull(key) || !has(key)) null else optDouble(key)
+    }
+
+    private fun defaultLotSizeFor(stakeUsd: Double): Double {
+        return (stakeUsd / STAKE_PER_LOT_USD).coerceAtLeast(MIN_LOT_SIZE)
     }
 
     companion object {
         private const val PREFS_NAME = "trade_memory_store"
         private const val KEY_OPEN_POSITIONS = "open_positions"
         private const val KEY_CLOSED_TRADES = "closed_trades"
+        private const val KEY_PENDING_ORDERS = "pending_orders"
         private const val KEY_DEMO_BALANCE = "demo_balance"
         private const val MAX_CLOSED_TRADES = 50
         private const val DEFAULT_DEMO_BALANCE = 10_000.0
         private const val DEFAULT_STAKE_USD = 1_000.0
+        private const val STAKE_PER_LOT_USD = 10_000.0
+        private const val MIN_LOT_SIZE = 0.01
     }
 }

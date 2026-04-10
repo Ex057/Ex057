@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -30,25 +31,37 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ShowChart
+import androidx.compose.material.icons.outlined.CallSplit
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.Notifications
-import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.SyncAlt
+import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -66,6 +79,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ex57.capital.analysis.AnalysisStub
 import com.ex57.capital.data.PriceViewModel
@@ -88,9 +102,12 @@ import com.ex57.capital.ui.SupportedSymbols
 import com.ex57.capital.ui.SupportedTimeframes
 import com.ex57.capital.ui.theme.EX57Theme
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -125,23 +142,23 @@ private enum class AppTab(
         title = "Signal Home",
         subtitle = "Live setup scoring tuned for fast directional reads."
     ),
-    MARKETS(
-        label = "Markets",
-        icon = Icons.Outlined.Search,
-        title = "Market Scanner",
-        subtitle = "Track which instruments are currently worth attention."
-    ),
-    ALERTS(
-        label = "Alerts",
-        icon = Icons.Outlined.Notifications,
-        title = "Signal Alerts",
-        subtitle = "Review trigger quality before you act on fast conditions."
-    ),
-    BACKTEST(
-        label = "Backtest",
+    CHARTS(
+        label = "Charts",
         icon = Icons.AutoMirrored.Outlined.ShowChart,
-        title = "Evidence Lab",
-        subtitle = "Inspect expectancy, sample size, and robustness before trusting a setup."
+        title = "Charts",
+        subtitle = "Full chart view with timeframe access and live feed context."
+    ),
+    TRADES(
+        label = "Trades",
+        icon = Icons.Outlined.SyncAlt,
+        title = "Trades",
+        subtitle = "Monitor live demo positions, margin health, and trade management."
+    ),
+    HISTORY(
+        label = "History",
+        icon = Icons.Outlined.History,
+        title = "History",
+        subtitle = "Review closed demo deals and see what actually happened."
     ),
     SETTINGS(
         label = "Settings",
@@ -194,6 +211,7 @@ fun EX57App() {
     val connectedFeed by priceViewModel.symbol.collectAsState()
     val openPositions by priceViewModel.openPositions.collectAsState()
     val closedTrades by priceViewModel.closedTrades.collectAsState()
+    val pendingOrders by priceViewModel.pendingOrders.collectAsState()
     val demoBalance by priceViewModel.demoBalance.collectAsState()
     val darkTheme = androidx.compose.foundation.isSystemInDarkTheme()
     var selectedTab by remember { mutableStateOf(AppTab.HOME) }
@@ -201,6 +219,7 @@ fun EX57App() {
     var selectedTimeframe by remember { mutableStateOf(SupportedTimeframes[2]) }
     var selectedMode by remember { mutableStateOf(ConfirmationMode.MODERATE) }
     var analysisResult by remember { mutableStateOf<AnalysisResult?>(null) }
+    var selectedLotSizeInput by remember { mutableStateOf("0.10") }
     var alertHistory by remember { mutableStateOf<List<SignalAlertEntry>>(emptyList()) }
     var alertMonitor by remember { mutableStateOf(AlertMonitorState()) }
     var autoAnalyzeLiveFeed by remember { mutableStateOf(false) }
@@ -329,11 +348,13 @@ fun EX57App() {
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
                     .padding(padding)
-                    .padding(horizontal = 16.dp)
+                    .padding(horizontal = if (selectedTab == AppTab.HOME || selectedTab == AppTab.SETTINGS) 16.dp else 4.dp)
                     .padding(bottom = 12.dp)
             ) {
-                FloatingHeader(tab = selectedTab)
-                Spacer(modifier = Modifier.height(16.dp))
+                if (selectedTab == AppTab.HOME || selectedTab == AppTab.SETTINGS) {
+                    FloatingHeader(tab = selectedTab)
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
                 when (selectedTab) {
                     AppTab.HOME -> HomeDashboard(
                         priceViewModel = priceViewModel,
@@ -346,12 +367,14 @@ fun EX57App() {
                         selectedMode = selectedMode,
                         onModeChange = { selectedMode = it },
                         analysisResult = analysisResult,
-                        openPosition = openPositions.firstOrNull {
+                        openPosition = openPositions.filter {
                             it.symbolCode == selectedSymbol.code && it.timeframe == selectedTimeframe
-                        },
+                        }.maxByOrNull { it.openedAtEpochMillis },
+                        lotSizeInput = selectedLotSizeInput,
+                        onLotSizeInputChange = { selectedLotSizeInput = it },
                         onOpenTrade = {
                             analysisResult?.let { result ->
-                                priceViewModel.openTrade(
+                                val opened = priceViewModel.openTrade(
                                     symbol = selectedSymbol,
                                     timeframe = selectedTimeframe,
                                     analysisResult = result,
@@ -359,17 +382,30 @@ fun EX57App() {
                                         ?: result.tradeSetup.entry
                                         ?: candleHistory.lastOrNull()?.close
                                         ?: recentPrices.lastOrNull()
+                                        ?: priceViewModel.latestKnownPrice(
+                                            selectedSymbol.derivSymbol,
+                                            selectedTimeframe
+                                        ),
+                                    lotSize = selectedLotSizeInput.toDoubleOrNull() ?: 0.10
                                 )
-                                runAnalysis(recordAlert = false, source = "Position")
+                                if (opened) {
+                                    selectedTab = AppTab.TRADES
+                                    runAnalysis(recordAlert = false, source = "Position")
+                                }
                             }
                         },
-                        onCloseTrade = {
-                            priceViewModel.closeTrade(
-                                symbolCode = selectedSymbol.code,
-                                timeframe = selectedTimeframe,
-                                exitPrice = livePrice
-                            )
-                            runAnalysis(recordAlert = false, source = "Close")
+                        onPlacePendingTrade = {
+                            analysisResult?.let { result ->
+                                val placed = priceViewModel.placePendingOrder(
+                                    symbol = selectedSymbol,
+                                    timeframe = selectedTimeframe,
+                                    analysisResult = result,
+                                    lotSize = selectedLotSizeInput.toDoubleOrNull() ?: 0.10
+                                )
+                                if (placed) {
+                                    selectedTab = AppTab.TRADES
+                                }
+                            }
                         },
                         onConnect = {
                             analysisResult = null
@@ -383,59 +419,27 @@ fun EX57App() {
                         dataQuality = dataQuality,
                         feedState = feedState
                     )
-                    AppTab.MARKETS -> MarketsPanel(
+                    AppTab.CHARTS -> ChartsPanel(
                         selectedSymbol = selectedSymbol,
-                        onTrackSymbol = { symbol ->
-                            selectedSymbol = symbol
-                            selectedTab = AppTab.HOME
-                        },
                         selectedTimeframe = selectedTimeframe,
-                        selectedMode = selectedMode,
-                        onConnectSymbol = { symbol ->
-                            selectedSymbol = symbol
-                            analysisResult = null
-                            priceViewModel.connect(symbol.derivSymbol, selectedTimeframe)
-                        },
-                        onAnalyzeSymbol = { symbol ->
-                            selectedSymbol = symbol
-                            selectedTab = AppTab.HOME
-                            priceViewModel.refreshCandles(symbol.derivSymbol, selectedTimeframe)
-                            runAnalysis(targetSymbol = symbol, recordAlert = true, source = "Scanner")
-                        },
-                        connectedFeed = connectedFeed
-                    )
-                    AppTab.ALERTS -> AlertsPanel(
+                        onTimeframeChange = { selectedTimeframe = it },
+                        livePrice = livePrice,
+                        recentPrices = recentPrices,
+                        candles = candleHistory,
+                        dataQuality = dataQuality,
                         analysisResult = analysisResult,
-                        alertHistory = alertHistory,
-                        selectedSymbol = selectedSymbol,
-                        selectedTimeframe = selectedTimeframe,
-                        monitorState = alertMonitor,
-                        onMonitorIntervalChange = { minutes ->
-                            alertMonitor = alertMonitor.copy(intervalMinutes = minutes)
+                        connectedFeed = connectedFeed,
+                        onConnect = {
+                            priceViewModel.connect(selectedSymbol.derivSymbol, selectedTimeframe)
                         },
-                        onStartMonitoring = {
-                            alertMonitor = AlertMonitorState(
-                                enabled = true,
-                                symbol = selectedSymbol,
-                                timeframe = selectedTimeframe,
-                                intervalMinutes = alertMonitor.intervalMinutes,
-                                lastCheckLabel = "Starting"
-                            )
-                        },
-                        onStopMonitoring = {
-                            alertMonitor = alertMonitor.copy(enabled = false)
-                        },
-                        onClearAlerts = { alertHistory = emptyList() },
-                        onPinCurrentSignal = {
-                            analysisResult?.let { result -> pushAlert(selectedSymbol, result, "Pinned") }
+                        onAnalyze = {
+                            priceViewModel.refreshCandles(selectedSymbol.derivSymbol, selectedTimeframe)
+                            runAnalysis(recordAlert = true, source = "Chart")
                         }
                     )
-                    AppTab.BACKTEST -> BacktestPanel(
-                        analysisResult = analysisResult,
-                        dataQuality = dataQuality,
-                        selectedSymbol = selectedSymbol,
-                        closedTrades = closedTrades,
+                    AppTab.TRADES -> TradesPanel(
                         openPositions = openPositions,
+                        pendingOrders = pendingOrders,
                         demoBalance = demoBalance,
                         livePrice = livePrice,
                         connectedFeed = connectedFeed,
@@ -446,9 +450,39 @@ fun EX57App() {
                             selectedSymbol = SupportedSymbols.firstOrNull { it.derivSymbol == position.derivSymbol }
                                 ?: selectedSymbol
                             selectedTimeframe = position.timeframe
-                            selectedTab = AppTab.BACKTEST
+                            selectedTab = AppTab.TRADES
                             priceViewModel.connect(position.derivSymbol, position.timeframe)
+                        },
+                        onChartPosition = { position ->
+                            selectedSymbol = SupportedSymbols.firstOrNull { it.derivSymbol == position.derivSymbol }
+                                ?: selectedSymbol
+                            selectedTimeframe = position.timeframe
+                            selectedTab = AppTab.CHARTS
+                            priceViewModel.connect(position.derivSymbol, position.timeframe)
+                        },
+                        onPartialClosePosition = { position ->
+                            val exitPrice = if (position.derivSymbol == connectedFeed) {
+                                livePrice
+                            } else {
+                                priceViewModel.latestKnownPrice(position.derivSymbol, position.timeframe)
+                            }
+                            priceViewModel.partialCloseTradeById(position.id, exitPrice, 0.25)
+                        },
+                        onClosePosition = { position: TradePosition ->
+                            val exitPrice = if (position.derivSymbol == connectedFeed) {
+                                livePrice
+                            } else {
+                                priceViewModel.latestKnownPrice(position.derivSymbol, position.timeframe)
+                            }
+                            priceViewModel.closeTradeById(position.id, exitPrice)
+                        },
+                        onCancelPendingOrder = { orderId ->
+                            priceViewModel.cancelPendingOrder(orderId)
                         }
+                    )
+                    AppTab.HISTORY -> HistoryPanel(
+                        closedTrades = closedTrades,
+                        demoBalance = demoBalance
                     )
                     AppTab.SETTINGS -> SettingsPanel(
                         selectedMode = selectedMode,
@@ -510,8 +544,10 @@ private fun HomeDashboard(
     onModeChange: (ConfirmationMode) -> Unit,
     analysisResult: AnalysisResult?,
     openPosition: TradePosition?,
+    lotSizeInput: String,
+    onLotSizeInputChange: (String) -> Unit,
     onOpenTrade: () -> Unit,
-    onCloseTrade: () -> Unit,
+    onPlacePendingTrade: () -> Unit,
     onConnect: () -> Unit,
     onAnalyze: () -> Unit
 ) {
@@ -525,7 +561,9 @@ private fun HomeDashboard(
         selectedMode = selectedMode,
         onModeChange = onModeChange,
         onConnect = onConnect,
-        onAnalyze = onAnalyze
+        onAnalyze = onAnalyze,
+        lotSizeInput = lotSizeInput,
+        onLotSizeInputChange = onLotSizeInputChange
     )
     Spacer(modifier = Modifier.height(16.dp))
     SignalCard(
@@ -539,16 +577,16 @@ private fun HomeDashboard(
         selectedMode = selectedMode,
         analysisResult = analysisResult,
         openPosition = openPosition,
+        lotSizeInput = lotSizeInput,
         onOpenTrade = onOpenTrade,
-        onCloseTrade = onCloseTrade
+        onPlacePendingTrade = onPlacePendingTrade
     )
     openPosition?.let {
         Spacer(modifier = Modifier.height(12.dp))
         ActivePositionCard(
             position = it,
             livePrice = livePrice,
-            analysisResult = analysisResult,
-            onCloseTrade = onCloseTrade
+            analysisResult = analysisResult
         )
     }
 }
@@ -630,8 +668,9 @@ private fun SignalCard(
     selectedMode: ConfirmationMode,
     analysisResult: AnalysisResult?,
     openPosition: TradePosition? = null,
+    lotSizeInput: String,
     onOpenTrade: () -> Unit = {},
-    onCloseTrade: () -> Unit = {}
+    onPlacePendingTrade: () -> Unit = {}
 ) {
     val price by priceViewModel.price.collectAsState()
     val symbol by priceViewModel.symbol.collectAsState()
@@ -735,10 +774,15 @@ private fun SignalCard(
                     analysisResult = analysisResult,
                     biasColor = biasColor,
                     openPosition = openPosition,
+                    lotSizeInput = lotSizeInput,
                     onOpenTrade = onOpenTrade,
-                    onCloseTrade = onCloseTrade
+                    onPlacePendingTrade = onPlacePendingTrade
                 )
                 Spacer(modifier = Modifier.height(12.dp))
+                if (analysisResult.rejectionReasons.isNotEmpty()) {
+                    RejectionReasonsCard(analysisResult.rejectionReasons)
+                    Spacer(modifier = Modifier.height(12.dp))
+                }
                 EvidenceCard(
                     analysisResult = analysisResult
                 )
@@ -1008,6 +1052,128 @@ private fun TrendBadge(
 }
 
 @Composable
+private fun ChartsPanel(
+    selectedSymbol: TradingSymbol,
+    selectedTimeframe: String,
+    onTimeframeChange: (String) -> Unit,
+    livePrice: Double?,
+    recentPrices: List<Double>,
+    candles: List<MarketCandle>,
+    dataQuality: DataQuality,
+    analysisResult: AnalysisResult?,
+    connectedFeed: String?,
+    onConnect: () -> Unit,
+    onAnalyze: () -> Unit
+) {
+    val chartCandles = remember(candles, recentPrices, selectedTimeframe) {
+        if (candles.isNotEmpty()) {
+            candles.takeLast(120).map {
+                PriceCandle(
+                    open = it.open,
+                    high = it.high,
+                    low = it.low,
+                    close = it.close
+                )
+            }
+        } else {
+            buildCandles(recentPrices, selectedTimeframe)
+        }
+    }
+    val overlays = remember(chartCandles) { buildChartOverlayState(chartCandles) }
+    Surface(
+        color = Color(0xFF000000),
+        contentColor = Color.White,
+        modifier = Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+    ) {
+        Column(modifier = Modifier.padding(top = 12.dp, bottom = 8.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("${selectedSymbol.code} · $selectedTimeframe", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(if (connectedFeed == selectedSymbol.derivSymbol) "Live" else "Idle", color = Color(0xFF9CA3AF), fontSize = 11.sp)
+                    Text(livePrice?.let(::formatDisplayPrice) ?: "-", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                }
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                listOf("1m", "5m", "15m", "30m", "1h", "4h").forEach { timeframe ->
+                    androidx.compose.material3.Surface(
+                        onClick = { onTimeframeChange(timeframe) },
+                        color = if (selectedTimeframe == timeframe) Color(0xFF1F2937) else Color.Transparent,
+                        contentColor = if (selectedTimeframe == timeframe) Color.White else Color(0xFF9CA3AF),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Text(
+                            timeframe.uppercase(),
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(520.dp)
+                    .padding(horizontal = 2.dp, vertical = 6.dp)
+            ) {
+                if (analysisResult != null && chartCandles.size > 1) {
+                    PriceChart(
+                        candles = chartCandles,
+                        overlays = overlays,
+                        analysisResult = analysisResult,
+                        showFastTrend = true,
+                        showSlowTrend = true,
+                        showBiasLine = true,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color(0xFF05070B)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("Connect feed and analyze to load chart.", color = Color(0xFF9CA3AF), fontSize = 13.sp)
+                    }
+                }
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(onClick = onConnect, modifier = Modifier.weight(1f)) {
+                    Text("Connect")
+                }
+                Button(onClick = onAnalyze, modifier = Modifier.weight(1f)) {
+                    Text("Refresh")
+                }
+            }
+            Text(
+                "${selectedSymbol.label} • ${dataQuality.label}",
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                color = Color(0xFF6B7280),
+                fontSize = 11.sp
+            )
+        }
+    }
+}
+
+@Composable
 private fun EvidenceCard(
     analysisResult: AnalysisResult
 ) {
@@ -1040,14 +1206,32 @@ private fun EvidenceCard(
 }
 
 @Composable
+private fun RejectionReasonsCard(reasons: List<String>) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("Decision Reasons", fontWeight = FontWeight.SemiBold)
+            Spacer(modifier = Modifier.height(8.dp))
+            reasons.forEach { reason ->
+                Text(reason, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                Spacer(modifier = Modifier.height(6.dp))
+            }
+        }
+    }
+}
+
+@Composable
 private fun TradePlanCard(
     analysisResult: AnalysisResult,
     biasColor: Color,
     openPosition: TradePosition?,
+    lotSizeInput: String,
     onOpenTrade: () -> Unit,
-    onCloseTrade: () -> Unit
+    onPlacePendingTrade: () -> Unit
 ) {
     val tradeSetup = analysisResult.tradeSetup
+    val lotSize = lotSizeInput.toDoubleOrNull() ?: 0.10
+    val estimatedStake = lotSize * 10_000.0
+    val hasOpenPosition = openPosition != null
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
@@ -1082,24 +1266,52 @@ private fun TradePlanCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 12.sp
             )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                "Planned size: ${"%.2f".format(lotSize)} lots • Estimated exposure: ${formatCurrency(estimatedStake)}",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp
+            )
+            if (hasOpenPosition) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    "Another trade is already open here. You can still add a new entry.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp
+                )
+            }
             Spacer(modifier = Modifier.height(12.dp))
-            if (openPosition == null) {
-                Button(
-                    onClick = onOpenTrade,
-                    enabled = tradeSetup.shouldTrade && analysisResult.bias != TradeBias.NEUTRAL,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        if (analysisResult.bias == TradeBias.BEARISH) "Start Demo Short" else "Start Demo Long"
-                    )
-                }
-            } else {
-                OutlinedButton(
-                    onClick = onCloseTrade,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Close Demo Position")
-                }
+            Button(
+                onClick = onOpenTrade,
+                enabled = analysisResult.bias != TradeBias.NEUTRAL,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    when {
+                        analysisResult.bias == TradeBias.BEARISH && !tradeSetup.shouldTrade && hasOpenPosition -> "Add Demo Short Anyway"
+                        analysisResult.bias == TradeBias.BULLISH && !tradeSetup.shouldTrade && hasOpenPosition -> "Add Demo Long Anyway"
+                        analysisResult.bias == TradeBias.BEARISH && !tradeSetup.shouldTrade -> "Start Demo Short Anyway"
+                        analysisResult.bias == TradeBias.BULLISH && !tradeSetup.shouldTrade -> "Start Demo Long Anyway"
+                        analysisResult.bias == TradeBias.BEARISH && hasOpenPosition -> "Add Demo Short"
+                        analysisResult.bias == TradeBias.BULLISH && hasOpenPosition -> "Add Demo Long"
+                        analysisResult.bias == TradeBias.BEARISH -> "Start Demo Short"
+                        else -> "Start Demo Long"
+                    }
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = onPlacePendingTrade,
+                enabled = analysisResult.bias != TradeBias.NEUTRAL && tradeSetup.entry != null,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    when {
+                        analysisResult.bias == TradeBias.BEARISH -> "Place Pending Sell"
+                        analysisResult.bias == TradeBias.BULLISH -> "Place Pending Buy"
+                        else -> "Place Pending Order"
+                    }
+                )
             }
         }
     }
@@ -1109,8 +1321,7 @@ private fun TradePlanCard(
 private fun ActivePositionCard(
     position: TradePosition,
     livePrice: Double?,
-    analysisResult: AnalysisResult?,
-    onCloseTrade: () -> Unit
+    analysisResult: AnalysisResult?
 ) {
     val pnlPercent = livePrice?.let {
         when (position.side) {
@@ -1130,13 +1341,15 @@ private fun ActivePositionCard(
         Column(modifier = Modifier.padding(16.dp)) {
             Text("Active Position", fontWeight = FontWeight.SemiBold)
             Spacer(modifier = Modifier.height(8.dp))
-            Text("${position.symbolCode} • ${position.side.label} • ${position.timeframe}")
+            Text("${position.symbolCode} • ${position.side.label} ${"%.2f".format(position.lotSize)} • ${position.timeframe}")
             Spacer(modifier = Modifier.height(4.dp))
             Text("Opened: ${formatTimestamp(position.openedAtEpochMillis)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(modifier = Modifier.height(4.dp))
             Text("Entry: ${formatDisplayPrice(position.entryPrice)}")
             Spacer(modifier = Modifier.height(4.dp))
             Text("Live: ${livePrice?.let(::formatDisplayPrice) ?: "-"}")
+            Spacer(modifier = Modifier.height(4.dp))
+            Text("Remaining size: ${"%.2f".format(position.lotSize)} / ${"%.2f".format(position.initialLotSize)} lots")
             Spacer(modifier = Modifier.height(4.dp))
             Text("Stop: ${position.stopLoss?.let(::formatDisplayPrice) ?: "-"}")
             Spacer(modifier = Modifier.height(4.dp))
@@ -1150,6 +1363,12 @@ private fun ActivePositionCard(
                     else -> MaterialTheme.colorScheme.error
                 }
             )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                "Locked profit: ${formatCurrencySigned(position.realizedPnlUsd)} • Management stage ${position.managementStage}",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp
+            )
             guidance?.let {
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(it.headline, color = recommendationColor, fontWeight = FontWeight.Medium)
@@ -1157,12 +1376,11 @@ private fun ActivePositionCard(
                 Text(it.detail, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Spacer(modifier = Modifier.height(12.dp))
-            OutlinedButton(
-                onClick = onCloseTrade,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Close Demo Position")
-            }
+            Text(
+                "Manage exits and partial closes from Trades.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp
+            )
         }
     }
 }
@@ -1471,14 +1689,18 @@ private fun AlertsPanel(
 }
 
 @Composable
-private fun DemoTerminalPanel(
+private fun TradesPanel(
     openPositions: List<TradePosition>,
-    closedTrades: List<ClosedTradeRecord>,
+    pendingOrders: List<com.ex57.capital.model.PendingTradeOrder>,
     demoBalance: Double,
     livePrice: Double?,
     connectedFeed: String?,
     resolveLatestKnownPrice: (TradePosition) -> Double?,
-    onTrackPosition: (TradePosition) -> Unit
+    onTrackPosition: (TradePosition) -> Unit,
+    onChartPosition: (TradePosition) -> Unit,
+    onPartialClosePosition: (TradePosition) -> Unit,
+    onClosePosition: (TradePosition) -> Unit,
+    onCancelPendingOrder: (String) -> Unit
 ) {
     val openPnlUsd = openPositions.sumOf { position ->
         val currentPrice = if (position.derivSymbol == connectedFeed) {
@@ -1489,101 +1711,344 @@ private fun DemoTerminalPanel(
         positionPnlUsd(position, currentPrice) ?: 0.0
     }
     val equity = demoBalance + openPnlUsd
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text("Demo Terminal", fontWeight = FontWeight.SemiBold)
+    val usedMargin = openPositions.sumOf { it.stakeUsd * 0.10 }
+    val freeMargin = equity - usedMargin
+    val marginLevel = if (usedMargin <= 0.0) null else (equity / usedMargin) * 100.0
+    var closeCandidate by remember { mutableStateOf<TradePosition?>(null) }
+
+    closeCandidate?.let { position ->
+        ConfirmCloseTradeDialog(
+            position = position,
+            onDismiss = { closeCandidate = null },
+            onConfirm = {
+                onClosePosition(position)
+                closeCandidate = null
+            }
+        )
+    }
+
+    Surface(
+        color = Color(0xFF06080C),
+        contentColor = Color(0xFFF3F4F6),
+        modifier = Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 12.dp)) {
+            Text(
+                formatCurrencySigned(openPnlUsd),
+                color = if (openPnlUsd >= 0.0) Color(0xFF3B82F6) else Color(0xFFEF4444),
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 22.sp
+            )
             Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                "Balance: ${formatCurrency(demoBalance)}",
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Medium
+            TerminalMetricRow("Balance:", formatCurrency(demoBalance))
+            TerminalMetricRow("Equity:", formatCurrency(equity))
+            TerminalMetricRow("Margin:", formatCurrency(usedMargin))
+            TerminalMetricRow("Free margin:", formatCurrency(freeMargin))
+            TerminalMetricRow(
+                "Margin Level (%):",
+                marginLevel?.let { "%.2f".format(it) } ?: "-"
             )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                "Equity: ${formatCurrency(equity)}",
-                color = if (openPnlUsd >= 0.0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                fontWeight = FontWeight.Medium
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                "Open P/L: ${formatCurrencySigned(openPnlUsd)}",
-                color = if (openPnlUsd >= 0.0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text("Open positions: ${openPositions.size}")
-            Spacer(modifier = Modifier.height(4.dp))
-            Text("Closed positions: ${closedTrades.size}")
-            Spacer(modifier = Modifier.height(8.dp))
-            if (openPositions.isEmpty()) {
-                Text(
-                    "No active demo positions yet. Analyze a setup on Home, then open a demo trade from the Trade Plan.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+            Spacer(modifier = Modifier.height(6.dp))
+            if (pendingOrders.isNotEmpty()) {
+                TradeSectionBar("Orders")
+            }
+            pendingOrders.take(8).forEach { order ->
+                PendingOrderRow(order = order, onCancel = { onCancelPendingOrder(order.id) })
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(1.dp)
+                        .background(Color(0xFF1F2937))
                 )
-            } else {
-                openPositions.forEach { position ->
-                    val currentPrice = if (position.derivSymbol == connectedFeed) {
-                        livePrice ?: resolveLatestKnownPrice(position)
-                    } else {
-                        resolveLatestKnownPrice(position)
+            }
+            if (openPositions.isNotEmpty()) {
+                TradeSectionBar("Positions")
+            }
+            openPositions.take(15).forEachIndexed { index, position ->
+                val currentPrice = if (position.derivSymbol == connectedFeed) {
+                    livePrice ?: resolveLatestKnownPrice(position)
+                } else {
+                    resolveLatestKnownPrice(position)
+                }
+                TradeSwipeRow(
+                    position = position,
+                    currentPrice = currentPrice,
+                    isTracked = position.derivSymbol == connectedFeed,
+                    onTrackPosition = { onTrackPosition(position) },
+                    onChartPosition = { onChartPosition(position) },
+                    onPartialClosePosition = { onPartialClosePosition(position) },
+                    onClosePosition = { closeCandidate = position }
+                )
+                if (index != minOf(openPositions.size, 15) - 1) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(1.dp)
+                            .background(Color(0xFF1F2937))
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TradeSwipeRow(
+    position: TradePosition,
+    currentPrice: Double?,
+    isTracked: Boolean,
+    onTrackPosition: () -> Unit,
+    onChartPosition: () -> Unit,
+    onPartialClosePosition: () -> Unit,
+    onClosePosition: () -> Unit
+) {
+    val pnlPercent = positionPnlPercent(position, currentPrice)
+    val pnlUsd = positionPnlUsd(position, currentPrice)
+    val scope = rememberCoroutineScope()
+    val dismissState = rememberSwipeToDismissBoxState(
+        positionalThreshold = { distance -> distance * 0.30f }
+    )
+
+    SwipeToDismissBox(
+        state = dismissState,
+        enableDismissFromStartToEnd = false,
+        backgroundContent = {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .defaultMinSize(minHeight = 88.dp)
+                    .background(Color(0xFF0B1220)),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TradeActionStrip(
+                    icon = Icons.Outlined.Visibility,
+                    label = if (isTracked) "Live" else "Track",
+                    background = Color(0xFF1D4ED8),
+                    onClick = {
+                        onTrackPosition()
+                        scope.launch { dismissState.reset() }
                     }
-                    val pnlPercent = positionPnlPercent(position, currentPrice)
-                    val pnlUsd = positionPnlUsd(position, currentPrice)
-                    Text(
-                        "${position.symbolCode} • ${position.side.label} • ${position.timeframe}",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        "Stake: ${formatCurrency(position.stakeUsd)}",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 13.sp
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        "Entry: ${formatDisplayPrice(position.entryPrice)}",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 13.sp
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        if (pnlUsd == null || pnlPercent == null) {
-                            if (currentPrice == null) {
-                                "P/L: connect this pair to resume motion"
-                            } else {
-                                "P/L: waiting for live update"
-                            }
-                        } else {
-                            "P/L: ${formatCurrencySigned(pnlUsd)}  (${formatPercentSigned(pnlPercent)})"
-                        },
-                        color = when {
-                            pnlUsd == null -> MaterialTheme.colorScheme.onSurfaceVariant
-                            pnlUsd >= 0.0 -> MaterialTheme.colorScheme.primary
-                            else -> MaterialTheme.colorScheme.error
-                        },
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        "Live: ${currentPrice?.let(::formatDisplayPrice) ?: "-"}",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.sp
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        "Opened: ${formatTimestamp(position.openedAtEpochMillis)}",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.sp
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedButton(
-                        onClick = { onTrackPosition(position) },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(if (position.derivSymbol == connectedFeed) "Tracking Live" else "Track Live ${position.symbolCode}")
+                )
+                TradeActionStrip(
+                    icon = Icons.AutoMirrored.Outlined.ShowChart,
+                    label = "Chart",
+                    background = Color(0xFF0F766E),
+                    onClick = {
+                        onChartPosition()
+                        scope.launch { dismissState.reset() }
                     }
-                    Spacer(modifier = Modifier.height(12.dp))
+                )
+                TradeActionStrip(
+                    icon = Icons.Outlined.CallSplit,
+                    label = "Part",
+                    background = Color(0xFF7C3AED),
+                    onClick = {
+                        onPartialClosePosition()
+                        scope.launch { dismissState.reset() }
+                    }
+                )
+                TradeActionStrip(
+                    icon = Icons.Outlined.Close,
+                    label = "Close",
+                    background = Color(0xFFB91C1C),
+                    onClick = {
+                        onClosePosition()
+                        scope.launch { dismissState.reset() }
+                    }
+                )
+            }
+        }
+    ) {
+        Surface(
+            color = Color(0xFF05070B),
+            contentColor = Color(0xFFF9FAFB),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "${position.symbolCode}, ${position.side.name.lowercase()} ${"%.2f".format(position.lotSize)}",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            "${formatDisplayPrice(position.entryPrice)} -> ${currentPrice?.let(::formatDisplayPrice) ?: "-"}",
+                            color = Color(0xFF9CA3AF),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(
+                            pnlUsd?.let(::formatCurrencySigned) ?: "--",
+                            color = when {
+                                pnlUsd == null -> Color(0xFF9CA3AF)
+                                pnlUsd >= 0.0 -> Color(0xFF3B82F6)
+                                else -> Color(0xFFEF4444)
+                            },
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 16.sp
+                        )
+                        if (pnlPercent != null) {
+                            Text(
+                                formatPercentSigned(pnlPercent),
+                                color = if (pnlPercent >= 0.0) Color(0xFF60A5FA) else Color(0xFFF87171),
+                                fontSize = 10.sp
+                            )
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    "${position.timeframe} • Opened ${formatTimestamp(position.openedAtEpochMillis)}",
+                    color = Color(0xFF9CA3AF),
+                    fontSize = 10.sp
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    "Locked ${formatCurrencySigned(position.realizedPnlUsd)} • Remaining ${"%.2f".format(position.lotSize)} / ${"%.2f".format(position.initialLotSize)} lots • Stage ${position.managementStage}",
+                    color = Color(0xFF6B7280),
+                    fontSize = 9.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TradeActionStrip(
+    icon: ImageVector,
+    label: String,
+    background: Color,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        color = background,
+        contentColor = Color.White,
+        modifier = Modifier
+            .width(80.dp)
+            .defaultMinSize(minHeight = 88.dp)
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Icon(icon, contentDescription = label, tint = Color.White, modifier = Modifier.size(22.dp))
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(label, fontWeight = FontWeight.Medium, fontSize = 10.sp)
+        }
+    }
+}
+
+@Composable
+private fun PendingOrderRow(
+    order: com.ex57.capital.model.PendingTradeOrder,
+    onCancel: () -> Unit
+) {
+    Surface(
+        color = Color(0xFF05070B),
+        contentColor = Color(0xFFF9FAFB),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Top
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "${order.symbolCode}, ${if (order.side == PositionSide.LONG) "buy limit" else "sell limit"} ${"%.2f".format(order.lotSize)}",
+                    color = Color.White,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 15.sp
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    "at ${formatDisplayPrice(order.targetEntryPrice)}",
+                    color = Color(0xFF9CA3AF),
+                    fontSize = 12.sp
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    "S/L ${order.stopLoss?.let(::formatDisplayPrice) ?: "-"} • T/P ${order.takeProfit?.let(::formatDisplayPrice) ?: "-"}",
+                    color = Color(0xFF6B7280),
+                    fontSize = 10.sp
+                )
+            }
+            OutlinedButton(onClick = onCancel) {
+                Text("Cancel")
+            }
+        }
+    }
+}
+
+@Composable
+private fun TradeSectionBar(title: String) {
+    Surface(
+        color = Color(0xFF30343A),
+        contentColor = Color(0xFFD1D5DB),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(title, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+            Text("•••", color = Color(0xFF9CA3AF), fontSize = 16.sp)
+        }
+    }
+}
+
+@Composable
+private fun ConfirmCloseTradeDialog(
+    position: TradePosition,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = Color(0xFF2B2F36),
+            contentColor = Color.White
+        ) {
+            Column(modifier = Modifier.padding(18.dp)) {
+                Text("Close Trade", fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    "Are you sure you want to close ${position.symbolCode} ${position.side.name.lowercase()} ${"%.2f".format(position.lotSize)}?",
+                    color = Color(0xFFD1D5DB),
+                    fontSize = 14.sp
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    "This will move the trade into history using the current available price.",
+                    color = Color(0xFF9CA3AF),
+                    fontSize = 12.sp
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    TextButton(onClick = onDismiss, modifier = Modifier.weight(1f)) {
+                        Text("Cancel")
+                    }
+                    Button(onClick = onConfirm, modifier = Modifier.weight(1f)) {
+                        Text("Close")
+                    }
                 }
             }
         }
@@ -1591,113 +2056,330 @@ private fun DemoTerminalPanel(
 }
 
 @Composable
-private fun BacktestPanel(
-    analysisResult: AnalysisResult?,
-    dataQuality: DataQuality,
-    selectedSymbol: TradingSymbol,
+private fun HistoryPanel(
     closedTrades: List<ClosedTradeRecord>,
-    openPositions: List<TradePosition>,
-    demoBalance: Double,
-    livePrice: Double?,
-    connectedFeed: String?,
-    resolveLatestKnownPrice: (TradePosition) -> Double?,
-    onTrackPosition: (TradePosition) -> Unit
+    demoBalance: Double
 ) {
-    val symbolHistory = closedTrades.filter { it.symbolCode == selectedSymbol.code }
-    val winRate = if (symbolHistory.isEmpty()) 0 else ((symbolHistory.count { it.pnlPercent >= 0.0 } * 100.0) / symbolHistory.size).toInt()
-    val averagePnl = if (symbolHistory.isEmpty()) 0.0 else symbolHistory.map { it.pnlPercent }.average()
+    var selectedPeriod by remember { mutableStateOf(HistoryPeriodOption.LAST_WEEK) }
+    var selectedTab by remember { mutableStateOf(HistoryViewTab.POSITIONS) }
+    var expandedPeriodMenu by remember { mutableStateOf(false) }
+    var selectedTrade by remember { mutableStateOf<ClosedTradeRecord?>(null) }
+    val filteredTrades = remember(closedTrades, selectedPeriod) {
+        filterTradesByPeriod(closedTrades, selectedPeriod)
+    }
+    val closedPnl = filteredTrades.sumOf { it.pnlUsd }
 
-    DemoTerminalPanel(
-        openPositions = openPositions,
-        closedTrades = closedTrades,
-        demoBalance = demoBalance,
-        livePrice = livePrice,
-        connectedFeed = connectedFeed,
-        resolveLatestKnownPrice = resolveLatestKnownPrice,
-        onTrackPosition = onTrackPosition
-    )
-    Spacer(modifier = Modifier.height(16.dp))
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text("Backtest Snapshot", fontWeight = FontWeight.SemiBold)
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                "Data source: ${dataQuality.label}",
-                color = if (dataQuality == DataQuality.EXCHANGE_OHLC) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            if (analysisResult == null) {
-                Text(
-                    "Run an analysis first. This panel shows expectancy, sample size, and the last 20 outcomes for the current setup.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            } else {
-                val evidence = analysisResult.evidence
-                Text(
-                    "Live Estimate",
-                    fontWeight = FontWeight.Medium
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    "These values are generated from the current loaded market data. They are dynamic, but they are not yet replay-derived closed-trade statistics.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 13.sp
-                )
-                Spacer(modifier = Modifier.height(10.dp))
-                Text("Decision Gate: ${analysisResult.decision.label}")
-                Spacer(modifier = Modifier.height(4.dp))
-                Text("Setup Type: ${analysisResult.setupType.label}")
-                Spacer(modifier = Modifier.height(4.dp))
-                Text("Expectancy estimate: ${evidence.expectancyR}")
-                Spacer(modifier = Modifier.height(4.dp))
-                Text("Win rate estimate: ${evidence.winRate}%")
-                Spacer(modifier = Modifier.height(4.dp))
-                Text("Profit factor estimate: ${evidence.profitFactor}")
-                Spacer(modifier = Modifier.height(4.dp))
-                Text("Avg R / Median R: ${evidence.avgR} / ${evidence.medianR}")
-                Spacer(modifier = Modifier.height(4.dp))
-                Text("Max drawdown estimate: ${evidence.maxDrawdownR}")
-                Spacer(modifier = Modifier.height(4.dp))
-                Text("Synthetic samples: ${evidence.sampleSize}")
-                Spacer(modifier = Modifier.height(4.dp))
-                Text("Confidence: ${evidence.confidenceBadge}")
-                Spacer(modifier = Modifier.height(4.dp))
-                Text("Robustness: ${evidence.robustness}")
-                Spacer(modifier = Modifier.height(12.dp))
-                Text("Last 20 outcomes", fontWeight = FontWeight.Medium)
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    evidence.lastOutcomes.joinToString("  ").ifBlank { "No outcomes yet" },
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+    if (selectedTrade != null) {
+        HistoryTradeDetailDialog(
+            trade = selectedTrade!!,
+            onDismiss = { selectedTrade = null }
+        )
+    }
+
+    Surface(
+        color = Color(0xFF000000),
+        contentColor = Color(0xFFF3F4F6),
+        modifier = Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+    ) {
+        Column(modifier = Modifier.padding(top = 12.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.End
+            ) {
+                Box {
+                    OutlinedButton(onClick = { expandedPeriodMenu = true }) {
+                        Text(selectedPeriod.label)
+                    }
+                    DropdownMenu(
+                        expanded = expandedPeriodMenu,
+                        onDismissRequest = { expandedPeriodMenu = false }
+                    ) {
+                        HistoryPeriodOption.entries.forEach { option ->
+                            DropdownMenuItem(
+                                text = { Text(option.label) },
+                                onClick = {
+                                    selectedPeriod = option
+                                    expandedPeriodMenu = false
+                                }
+                            )
+                        }
+                    }
+                }
             }
+            HistoryTabRow(
+                selectedTab = selectedTab,
+                onTabSelected = { selectedTab = it }
+            )
             Spacer(modifier = Modifier.height(12.dp))
-            Text("Recorded Trades", fontWeight = FontWeight.Medium)
+            HistoryMetricLine(
+                label = "Profit",
+                value = formatCurrencySigned(closedPnl),
+                accent = if (closedPnl >= 0.0) Color(0xFF3B82F6) else Color(0xFFEF4444)
+            )
+            HistoryMetricLine("Deposit", formatCurrency(0.0))
+            HistoryMetricLine("Swap", formatCurrency(0.0))
+            HistoryMetricLine("Commission", formatCurrency(0.0))
+            HistoryMetricLine("Balance", formatCurrency(demoBalance))
             Spacer(modifier = Modifier.height(8.dp))
-            if (symbolHistory.isEmpty()) {
-                Text(
-                    "No closed ${selectedSymbol.code} trades have been recorded yet.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            } else {
-                Text("Actual recorded win rate: $winRate%")
-                Spacer(modifier = Modifier.height(4.dp))
-                Text("Actual average P/L: ${formatPercentSigned(averagePnl)}")
-                Spacer(modifier = Modifier.height(8.dp))
-                symbolHistory.take(5).forEach { trade ->
-                    Text(
-                        "${trade.outcomeLabel} • ${formatCurrencySigned(trade.pnlUsd)} • ${formatPercentSigned(trade.pnlPercent)} • ${formatTimestamp(trade.closedAtEpochMillis)}",
-                        color = if (trade.pnlPercent >= 0.0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                        fontSize = 13.sp
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
+            when (selectedTab) {
+                HistoryViewTab.DEALS -> {
+                    filteredTrades.take(15).forEachIndexed { index, trade ->
+                        HistoryTradeRow(
+                            trade = trade,
+                            onClick = { selectedTrade = trade }
+                        )
+                        if (index != minOf(filteredTrades.size, 15) - 1) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(1.dp)
+                                    .background(Color(0xFF374151))
+                            )
+                        }
+                    }
+                }
+                HistoryViewTab.POSITIONS,
+                HistoryViewTab.ORDERS -> {
+                    filteredTrades.take(15).forEachIndexed { index, trade ->
+                        HistoryTradeRow(
+                            trade = trade,
+                            onClick = { selectedTrade = trade }
+                        )
+                        if (index != minOf(filteredTrades.size, 15) - 1) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(1.dp)
+                                    .background(Color(0xFF374151))
+                            )
+                        }
+                    }
                 }
             }
         }
     }
 }
 
+private enum class HistoryViewTab(val label: String) {
+    POSITIONS("POSITIONS"),
+    ORDERS("ORDERS"),
+    DEALS("DEALS")
+}
+
+private enum class HistoryPeriodOption(val label: String, val daysBack: Long?) {
+    TODAY("Today", 0),
+    LAST_WEEK("Last week", 7),
+    LAST_MONTH("Last month", 31),
+    LAST_3_MONTHS("Last 3 months", 92),
+    ALL_TIME("All time", null)
+}
+
+@Composable
+private fun HistoryTabRow(
+    selectedTab: HistoryViewTab,
+    onTabSelected: (HistoryViewTab) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceEvenly
+    ) {
+        HistoryViewTab.entries.forEach { tab ->
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Surface(
+                    onClick = { onTabSelected(tab) },
+                    color = Color.Transparent,
+                    contentColor = if (selectedTab == tab) Color.White else Color(0xFF6B7280)
+                ) {
+                    Text(
+                        tab.label,
+                        modifier = Modifier.padding(vertical = 8.dp),
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .width(84.dp)
+                        .height(3.dp)
+                        .background(if (selectedTab == tab) Color(0xFF3B82F6) else Color.Transparent)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistoryMetricLine(
+    label: String,
+    value: String,
+    accent: Color = Color.White
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+        Spacer(modifier = Modifier.weight(1f))
+        Text(value, color = accent, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+    }
+}
+
+@Composable
+private fun HistoryTradeRow(
+    trade: ClosedTradeRecord,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        color = Color(0xFF000000),
+        contentColor = Color(0xFFF9FAFB),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Top
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Row {
+                    Text(
+                        "${trade.symbolCode}, ",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 17.sp
+                    )
+                    Text(
+                        "${trade.side.name.lowercase()} ${"%.2f".format(trade.lotSize)}",
+                        color = if (trade.side == PositionSide.LONG) Color(0xFF3B82F6) else Color(0xFFEF4444),
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 17.sp
+                    )
+                }
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    "${formatGroupedPrice(trade.entryPrice)} -> ${formatGroupedPrice(trade.exitPrice)}",
+                    color = Color(0xFF9CA3AF),
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    formatHistoryTimestamp(trade.closedAtEpochMillis),
+                    color = Color(0xFF9CA3AF),
+                    fontSize = 11.sp
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    formatCurrencySigned(trade.pnlUsd),
+                    color = if (trade.pnlUsd >= 0.0) Color(0xFF3B82F6) else Color(0xFFEF4444),
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistoryTradeDetailDialog(
+    trade: ClosedTradeRecord,
+    onDismiss: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = Color(0xFF2B2F36),
+            contentColor = Color.White
+        ) {
+            Column(modifier = Modifier.padding(18.dp)) {
+                Text(
+                    "${trade.symbolCode}, ${trade.side.name.lowercase()} ${"%.2f".format(trade.lotSize)}",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                DetailLine("Entry", formatDisplayPrice(trade.entryPrice))
+                DetailLine("Exit", formatDisplayPrice(trade.exitPrice))
+                DetailLine("Opened", formatHistoryTimestamp(trade.openedAtEpochMillis))
+                DetailLine("Closed", formatHistoryTimestamp(trade.closedAtEpochMillis))
+                DetailLine("Stop Loss", trade.stopLoss?.let(::formatDisplayPrice) ?: "-")
+                DetailLine("Take Profit", trade.takeProfit?.let(::formatDisplayPrice) ?: "-")
+                DetailLine("Outcome", trade.outcomeLabel)
+                DetailLine("P/L", formatCurrencySigned(trade.pnlUsd))
+                DetailLine("P/L %", formatPercentSigned(trade.pnlPercent))
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(trade.rationale, color = Color(0xFFD1D5DB), fontSize = 13.sp)
+                Spacer(modifier = Modifier.height(14.dp))
+                OutlinedButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
+                    Text("Close")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailLine(label: String, value: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(label, color = Color(0xFF9CA3AF), fontSize = 13.sp)
+        Text(value, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+    }
+}
+
 private fun formatDisplayPrice(value: Double): String = "%.5f".format(value)
+
+@Composable
+private fun SummaryMetricRow(
+    label: String,
+    value: String,
+    dark: Boolean = true
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            label,
+            color = if (dark) MaterialTheme.colorScheme.onSurfaceVariant else Color(0xFF6B7280)
+        )
+        Text(
+            value,
+            color = if (dark) MaterialTheme.colorScheme.onSurface else Color(0xFF111827),
+            fontWeight = FontWeight.Medium
+        )
+    }
+    Spacer(modifier = Modifier.height(4.dp))
+}
+
+@Composable
+private fun TerminalMetricRow(
+    label: String,
+    value: String,
+    accent: Color = Color.White
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, color = Color(0xFFD1D5DB), fontWeight = FontWeight.Medium)
+        Text(value, color = accent, fontWeight = FontWeight.Bold)
+    }
+    Spacer(modifier = Modifier.height(6.dp))
+}
 
 private fun positionPnlPercent(position: TradePosition, currentPrice: Double?): Double? {
     currentPrice ?: return null
@@ -1726,6 +2408,36 @@ private fun formatTimestamp(epochMillis: Long): String {
     return DateTimeFormatter.ofPattern("MMM d, HH:mm")
         .withZone(ZoneId.systemDefault())
         .format(Instant.ofEpochMilli(epochMillis))
+}
+
+private fun formatHistoryTimestamp(epochMillis: Long): String {
+    return DateTimeFormatter.ofPattern("yyyy.MM.dd HH:mm:ss")
+        .withZone(ZoneId.systemDefault())
+        .format(Instant.ofEpochMilli(epochMillis))
+}
+
+private fun filterTradesByPeriod(
+    trades: List<ClosedTradeRecord>,
+    period: HistoryPeriodOption
+): List<ClosedTradeRecord> {
+    val cutoff = period.daysBack?.let { days ->
+        val startDate = if (days == 0L) {
+            LocalDate.now()
+        } else {
+            LocalDate.now().minus(days, ChronoUnit.DAYS)
+        }
+        startDate.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+    }
+    return trades
+        .filter { trade -> cutoff == null || trade.closedAtEpochMillis >= cutoff }
+        .sortedByDescending { it.closedAtEpochMillis }
+}
+
+private fun formatGroupedPrice(value: Double): String {
+    val rounded = "%.2f".format(value)
+    val parts = rounded.split(".")
+    val groupedWhole = parts[0].reversed().chunked(3).joinToString(" ").reversed()
+    return "$groupedWhole.${parts.getOrElse(1) { "00" }}"
 }
 
 private fun currentTimeLabel(): String {
@@ -1844,40 +2556,43 @@ private fun FloatingBottomNav(
     darkTheme: Boolean
 ) {
     val compactLabels = LocalDensity.current.fontScale > 1.15f
-    Box(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .navigationBarsPadding()
-            .padding(horizontal = 16.dp, vertical = if (compactLabels) 10.dp else 16.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Card(
-            shape = RoundedCornerShape(28.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = if (darkTheme) {
-                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.97f)
+            .background(
+                if (darkTheme) {
+                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.98f)
                 } else {
                     MaterialTheme.colorScheme.surface.copy(alpha = 0.99f)
-                },
-                contentColor = MaterialTheme.colorScheme.onSurface
-            )
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = if (compactLabels) 4.dp else 8.dp, vertical = if (compactLabels) 6.dp else 10.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                AppTab.values().forEach { tab ->
-                    BottomNavItem(
-                        tab = tab,
-                        selected = tab == selectedTab,
-                        compactLabels = compactLabels,
-                        onClick = { onTabSelected(tab) }
-                    )
                 }
+            )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(
+                    if (darkTheme) Color(0xFF1F2937) else MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)
+                )
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(
+                    horizontal = if (compactLabels) 4.dp else 6.dp,
+                    vertical = if (compactLabels) 4.dp else 6.dp
+                ),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AppTab.values().forEach { tab ->
+                BottomNavItem(
+                    tab = tab,
+                    selected = tab == selectedTab,
+                    compactLabels = compactLabels,
+                    onClick = { onTabSelected(tab) }
+                )
             }
         }
     }
@@ -1891,7 +2606,7 @@ private fun BottomNavItem(
     onClick: () -> Unit
 ) {
     val scale by animateFloatAsState(
-        targetValue = if (selected) 1.02f else 1f,
+        targetValue = if (selected) 1.01f else 1f,
         animationSpec = spring(),
         label = "tabScale"
     )
@@ -1900,12 +2615,12 @@ private fun BottomNavItem(
         onClick = onClick,
         color = Color.Transparent,
         modifier = Modifier.scale(scale),
-        shape = RoundedCornerShape(22.dp)
+        shape = RoundedCornerShape(16.dp)
     ) {
         Column(
             modifier = Modifier.padding(
                 horizontal = if (compactLabels) 10.dp else 12.dp,
-                vertical = if (compactLabels) 8.dp else 6.dp
+                vertical = if (compactLabels) 6.dp else 5.dp
             ),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
@@ -1913,25 +2628,25 @@ private fun BottomNavItem(
                 imageVector = tab.icon,
                 contentDescription = tab.label,
                 tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(19.dp)
             )
             if (!compactLabels) {
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(3.dp))
                 Text(
                     text = tab.label,
-                    fontSize = 11.sp,
+                    fontSize = 10.sp,
                     fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
                     color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(3.dp))
             } else {
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(5.dp))
             }
             Box(
                 modifier = Modifier
-                    .width(20.dp)
+                    .width(18.dp)
                     .height(2.dp)
                     .background(
                         color = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,

@@ -15,6 +15,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -75,7 +76,9 @@ fun ControlsPanel(
     selectedMode: ConfirmationMode,
     onModeChange: (ConfirmationMode) -> Unit,
     onConnect: () -> Unit,
-    onAnalyze: () -> Unit
+    onAnalyze: () -> Unit,
+    lotSizeInput: String,
+    onLotSizeInputChange: (String) -> Unit
 ) {
     val selectedCategory = selectedSymbol.category
     val symbolsInCategory = remember(selectedCategory) {
@@ -132,6 +135,21 @@ fun ControlsPanel(
                     onModeChange(ConfirmationMode.values().first { it.label == label })
                 },
                 modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            OutlinedTextField(
+                value = lotSizeInput,
+                onValueChange = { updated ->
+                    if (updated.isEmpty() || updated.matches(Regex("^\\d{0,2}(\\.\\d{0,2})?$"))) {
+                        onLotSizeInputChange(updated)
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Lot Size") },
+                supportingText = {
+                    Text("Example: 0.10 lots. This will be used when you start the demo trade.")
+                },
+                singleLine = true
             )
             Spacer(modifier = Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {

@@ -68,9 +68,9 @@ internal object RiskManager {
             TradeDecision.ELIGIBLE ->
                 "Eligible setup. Wait for price to approach the planned entry, then execute only if the ${evaluation.setupType.label.lowercase()} structure still holds at candle close."
             TradeDecision.WATCHLIST ->
-                "Watchlist only. The setup shape is promising, but either supportive scores or staged evidence are not strong enough for immediate execution."
+                "Watchlist only. ${evaluation.rejectionReasons.firstOrNull() ?: "Supportive scores or staged evidence are not strong enough for immediate execution."}"
             TradeDecision.REJECT ->
-                "Reject this setup. Either expectancy is not positive or the market is not directional enough yet."
+                "Reject this setup. ${evaluation.rejectionReasons.firstOrNull() ?: "Either expectancy is not positive or the market is not directional enough yet."}"
         }
         val nextTrigger = when {
             evaluation.decision == TradeDecision.ELIGIBLE ->
@@ -98,6 +98,7 @@ internal object RiskManager {
             tradeSetup = tradeSetup,
             traderGuidance = traderGuidance,
             decision = evaluation.decision,
+            rejectionReasons = evaluation.rejectionReasons,
             evidence = features.evidence,
             setupType = evaluation.setupType,
             nextTrigger = nextTrigger,
@@ -116,12 +117,7 @@ internal object RiskManager {
         noiseCeiling: Double
     ): TradeSetup {
         val baseRisk = (averageStep * (2.0 + (noiseRatio / noiseCeiling).coerceAtMost(1.2))).coerceAtLeast(last * 0.0015)
-        val rewardMultiplier = when (mode) {
-            ConfirmationMode.CONSERVATIVE -> 2.4
-            ConfirmationMode.MODERATE -> 1.9
-            ConfirmationMode.AGGRESSIVE -> 1.5
-            ConfirmationMode.LENIENT -> 1.3
-        }
+        val rewardMultiplier = AnalysisSupport.configFor(mode).rewardMultiplier
         val setupAdjustment = if (setupType == SetupType.BREAKOUT) 1.15 else 1.0
 
         return when (bias) {

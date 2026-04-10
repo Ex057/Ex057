@@ -14,6 +14,7 @@ internal object StrategyEvaluator {
         input: AnalysisInput,
         features: FeatureExtractionResult
     ): StrategyEvaluation {
+        val modeConfig = AnalysisSupport.configFor(input.mode)
         val htfBullScore = AnalysisSupport.directionalScore(
             when (features.topDown.higherTimeframeBias) {
                 TradeBias.BULLISH -> 1.0
@@ -223,11 +224,11 @@ internal object StrategyEvaluator {
         }
 
         val bias = if (!hardBlock &&
-            bestCandidate.corePassed >= AnalysisSupport.minimumCoreRequired(input.mode) &&
-            directionalStrength >= directionalStrengthThreshold(input.mode) &&
-            bestCandidate.score >= AnalysisSupport.biasActivationThreshold(input.mode) &&
-            topDownDirectionalGate >= AnalysisSupport.topDownDirectionalThreshold(input.mode) &&
-            directionalEdge >= directionalEdgeThreshold(input.mode) &&
+            bestCandidate.corePassed >= modeConfig.minimumCoreRequired &&
+            directionalStrength >= modeConfig.directionalStrengthThreshold &&
+            bestCandidate.score >= modeConfig.biasActivationThreshold &&
+            topDownDirectionalGate >= modeConfig.topDownDirectionalThreshold &&
+            directionalEdge >= modeConfig.directionalEdgeThreshold &&
             setupStateAllowed
         ) {
             bestCandidate.bias
@@ -266,12 +267,12 @@ internal object StrategyEvaluator {
         val expectancyValue = features.evidence.expectancyR.removeSuffix("R").toDoubleOrNull() ?: 0.0
         val baseApproval = bias != TradeBias.NEUTRAL &&
             !hardBlock &&
-            bestCandidate.corePassed >= AnalysisSupport.minimumCoreRequired(input.mode) &&
-            directionalStrength >= directionalStrengthThreshold(input.mode) &&
-            setupQualityScore >= setupQualityThreshold(input.mode, bestCandidate.type) &&
-            setupQualityCount >= requiredSetupConfirmations(input.mode) &&
-            confluenceMetaScore >= AnalysisSupport.confluenceGateForMode(input.mode) &&
-            riskPenalty <= maxRiskPenalty(input.mode)
+            bestCandidate.corePassed >= modeConfig.minimumCoreRequired &&
+            directionalStrength >= modeConfig.directionalStrengthThreshold &&
+            setupQualityScore >= setupQualityThreshold(modeConfig, bestCandidate.type) &&
+            setupQualityCount >= modeConfig.requiredSetupConfirmations &&
+            confluenceMetaScore >= modeConfig.confluenceGate &&
+            riskPenalty <= modeConfig.maxRiskPenalty
         val approved = when (stage) {
             1 -> baseApproval
             2 -> baseApproval && expectancyValue > -0.05
@@ -319,12 +320,42 @@ internal object StrategyEvaluator {
             stage >= 3 && expectancyValue <= 0.0 -> TradeDecision.REJECT
             else -> TradeDecision.WATCHLIST
         }
+        val rejectionReasons = buildRejectionReasons(
+            mode = input.mode,
+            hardBlock = hardBlock,
+            severeNoise = severeNoise,
+            severeNews = severeNews,
+            corePassed = bestCandidate.corePassed,
+            minimumCoreRequired = modeConfig.minimumCoreRequired,
+            directionalStrength = directionalStrength,
+            directionalStrengthThreshold = modeConfig.directionalStrengthThreshold,
+            bestScore = bestCandidate.score,
+            biasActivationThreshold = modeConfig.biasActivationThreshold,
+            topDownDirectionalGate = topDownDirectionalGate,
+            topDownDirectionalThreshold = modeConfig.topDownDirectionalThreshold,
+            directionalEdge = directionalEdge,
+            directionalEdgeThreshold = modeConfig.directionalEdgeThreshold,
+            setupStateAllowed = setupStateAllowed,
+            setupQualityScore = setupQualityScore,
+            setupQualityThreshold = setupQualityThreshold(modeConfig, bestCandidate.type),
+            setupQualityCount = setupQualityCount,
+            requiredSetupConfirmations = modeConfig.requiredSetupConfirmations,
+            confluenceMetaScore = confluenceMetaScore,
+            confluenceGate = modeConfig.confluenceGate,
+            riskPenalty = riskPenalty,
+            maxRiskPenalty = modeConfig.maxRiskPenalty,
+            stage = stage,
+            expectancyValue = expectancyValue,
+            approved = approved,
+            decision = decision
+        )
 
         return StrategyEvaluation(
             setupType = if (bias == TradeBias.NEUTRAL) SetupType.NONE else bestCandidate.type,
             bias = bias,
             approved = approved,
             decision = decision,
+            rejectionReasons = rejectionReasons,
             confidence = confidence,
             confirmations = confirmations,
             topDownBullScore = topDownBullScore,
@@ -383,50 +414,85 @@ internal object StrategyEvaluator {
         return noisePenalty + newsPenalty + confluencePenalty
     }
 
-    private fun directionalStrengthThreshold(mode: ConfirmationMode): Double {
-        return when (mode) {
-            ConfirmationMode.CONSERVATIVE -> 0.66
-            ConfirmationMode.MODERATE -> 0.56
-            ConfirmationMode.AGGRESSIVE -> 0.48
-            ConfirmationMode.LENIENT -> 0.40
+    private fun setupQualityThreshold(modeConfig: com.ex57.capital.model.ModeConfig, setupType: SetupType): Double {
+        return if (setupType == SetupType.BREAKOUT) {
+            modeConfig.setupQualityThreshold + modeConfig.breakoutSetupQualityAdjustment
+        } else {
+            modeConfig.setupQualityThreshold
         }
     }
 
-    private fun setupQualityThreshold(mode: ConfirmationMode, setupType: SetupType): Double {
-        val base = when (mode) {
-            ConfirmationMode.CONSERVATIVE -> 0.60
-            ConfirmationMode.MODERATE -> 0.50
-            ConfirmationMode.AGGRESSIVE -> 0.42
-            ConfirmationMode.LENIENT -> 0.34
+    private fun buildRejectionReasons(
+        mode: ConfirmationMode,
+        hardBlock: Boolean,
+        severeNoise: Boolean,
+        severeNews: Boolean,
+        corePassed: Int,
+        minimumCoreRequired: Int,
+        directionalStrength: Double,
+        directionalStrengthThreshold: Double,
+        bestScore: Double,
+        biasActivationThreshold: Double,
+        topDownDirectionalGate: Double,
+        topDownDirectionalThreshold: Double,
+        directionalEdge: Double,
+        directionalEdgeThreshold: Double,
+        setupStateAllowed: Boolean,
+        setupQualityScore: Double,
+        setupQualityThreshold: Double,
+        setupQualityCount: Int,
+        requiredSetupConfirmations: Int,
+        confluenceMetaScore: Double,
+        confluenceGate: Double,
+        riskPenalty: Double,
+        maxRiskPenalty: Double,
+        stage: Int,
+        expectancyValue: Double,
+        approved: Boolean,
+        decision: TradeDecision
+    ): List<String> {
+        val reasons = mutableListOf<String>()
+        if (hardBlock) {
+            if (severeNoise) reasons += "Noise hard-blocked the setup for ${mode.label.lowercase()} mode."
+            if (severeNews) reasons += "Event-volatility pulse is too high for immediate execution."
         }
-        return if (setupType == SetupType.BREAKOUT && mode != ConfirmationMode.CONSERVATIVE) base - 0.03 else base
-    }
-
-    private fun requiredSetupConfirmations(mode: ConfirmationMode): Int {
-        return when (mode) {
-            ConfirmationMode.CONSERVATIVE -> 2
-            ConfirmationMode.MODERATE -> 1
-            ConfirmationMode.AGGRESSIVE -> 1
-            ConfirmationMode.LENIENT -> 0
+        if (corePassed < minimumCoreRequired) {
+            reasons += "Only $corePassed core confirmations passed; ${minimumCoreRequired} are required."
         }
-    }
-
-    private fun maxRiskPenalty(mode: ConfirmationMode): Double {
-        return when (mode) {
-            ConfirmationMode.CONSERVATIVE -> 0.42
-            ConfirmationMode.MODERATE -> 0.78
-            ConfirmationMode.AGGRESSIVE -> 1.00
-            ConfirmationMode.LENIENT -> 1.20
+        if (directionalStrength < directionalStrengthThreshold) {
+            reasons += "Directional strength ${AnalysisSupport.formatScore(directionalStrength)} is below the ${AnalysisSupport.formatScore(directionalStrengthThreshold)} threshold."
         }
-    }
-
-    private fun directionalEdgeThreshold(mode: ConfirmationMode): Double {
-        return when (mode) {
-            ConfirmationMode.CONSERVATIVE -> 0.45
-            ConfirmationMode.MODERATE -> 0.32
-            ConfirmationMode.AGGRESSIVE -> 0.20
-            ConfirmationMode.LENIENT -> 0.10
+        if (bestScore < biasActivationThreshold) {
+            reasons += "Weighted setup score ${AnalysisSupport.formatScore(bestScore)} did not reach the activation threshold."
         }
+        if (topDownDirectionalGate < topDownDirectionalThreshold) {
+            reasons += "Higher-timeframe directional alignment is too weak."
+        }
+        if (directionalEdge < directionalEdgeThreshold) {
+            reasons += "Directional edge over the runner-up setup is too small."
+        }
+        if (!setupStateAllowed) {
+            reasons += "Current setup/trigger state is not valid for this mode."
+        }
+        if (setupQualityScore < setupQualityThreshold) {
+            reasons += "Setup quality is below the minimum for execution."
+        }
+        if (setupQualityCount < requiredSetupConfirmations) {
+            reasons += "Not enough setup confirmations are active yet."
+        }
+        if (confluenceMetaScore < confluenceGate) {
+            reasons += "Cross-factor confluence is too weak."
+        }
+        if (riskPenalty > maxRiskPenalty) {
+            reasons += "Risk penalty is too high relative to the selected mode."
+        }
+        if (stage >= 2 && expectancyValue <= 0.0) {
+            reasons += "Historical expectancy is not positive enough for approval."
+        }
+        if (decision == TradeDecision.WATCHLIST && !approved) {
+            reasons += "Setup is usable for monitoring, but not strong enough for immediate approval."
+        }
+        return reasons.distinct()
     }
 
     private fun buildConfirmations(

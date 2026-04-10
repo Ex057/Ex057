@@ -6,6 +6,7 @@ import com.ex57.capital.model.Confirmation
 import com.ex57.capital.model.ConfirmationMode
 import com.ex57.capital.model.EvidenceSnapshot
 import com.ex57.capital.model.MarketCandle
+import com.ex57.capital.model.ModeConfig
 import com.ex57.capital.model.MtfaStatus
 import com.ex57.capital.model.SetupType
 import com.ex57.capital.model.TradeBias
@@ -14,6 +15,67 @@ import com.ex57.capital.model.TradeSetup
 import kotlin.math.abs
 
 internal object AnalysisSupport {
+    private val modeConfigs = mapOf(
+        ConfirmationMode.CONSERVATIVE to ModeConfig(
+            minimumCoreRequired = 5,
+            biasActivationThreshold = 6.2,
+            topDownDirectionalThreshold = 0.55,
+            confluenceGate = 0.58,
+            directionalStrengthThreshold = 0.66,
+            setupQualityThreshold = 0.60,
+            breakoutSetupQualityAdjustment = 0.0,
+            requiredSetupConfirmations = 2,
+            maxRiskPenalty = 0.42,
+            directionalEdgeThreshold = 0.45,
+            supportThreshold = 3.2,
+            rewardMultiplier = 2.4
+        ),
+        ConfirmationMode.MODERATE to ModeConfig(
+            minimumCoreRequired = 4,
+            biasActivationThreshold = 5.4,
+            topDownDirectionalThreshold = 0.45,
+            confluenceGate = 0.50,
+            directionalStrengthThreshold = 0.56,
+            setupQualityThreshold = 0.50,
+            breakoutSetupQualityAdjustment = -0.03,
+            requiredSetupConfirmations = 1,
+            maxRiskPenalty = 0.78,
+            directionalEdgeThreshold = 0.32,
+            supportThreshold = 2.5,
+            rewardMultiplier = 1.9
+        ),
+        ConfirmationMode.AGGRESSIVE to ModeConfig(
+            minimumCoreRequired = 3,
+            biasActivationThreshold = 4.7,
+            topDownDirectionalThreshold = 0.35,
+            confluenceGate = 0.42,
+            directionalStrengthThreshold = 0.48,
+            setupQualityThreshold = 0.42,
+            breakoutSetupQualityAdjustment = -0.03,
+            requiredSetupConfirmations = 1,
+            maxRiskPenalty = 1.00,
+            directionalEdgeThreshold = 0.20,
+            supportThreshold = 1.9,
+            rewardMultiplier = 1.5
+        ),
+        ConfirmationMode.LENIENT to ModeConfig(
+            minimumCoreRequired = 3,
+            biasActivationThreshold = 3.9,
+            topDownDirectionalThreshold = 0.22,
+            confluenceGate = 0.30,
+            directionalStrengthThreshold = 0.40,
+            setupQualityThreshold = 0.34,
+            breakoutSetupQualityAdjustment = -0.03,
+            requiredSetupConfirmations = 0,
+            maxRiskPenalty = 1.20,
+            directionalEdgeThreshold = 0.10,
+            supportThreshold = 1.35,
+            rewardMultiplier = 1.3
+        )
+    )
+
+    fun configFor(mode: ConfirmationMode): ModeConfig = modeConfigs.getValue(mode)
+
     fun buildTimeframePlan(timeframe: String): AnalysisTimeframePlan {
         return when (timeframe) {
             "1m" -> AnalysisTimeframePlan(macro = "15m", structure = "5m", setup = "1m", trigger = "1m")
@@ -52,6 +114,7 @@ internal object AnalysisSupport {
             ),
             traderGuidance = "Forfeit for now. Build more price history before trusting any setup.",
             decision = TradeDecision.REJECT,
+            rejectionReasons = listOf("Not enough live data yet to evaluate trend, structure, or momentum."),
             evidence = emptyEvidence(),
             setupType = SetupType.NONE,
             nextTrigger = "Wait for more live candles before evaluating this market.",
@@ -163,50 +226,18 @@ internal object AnalysisSupport {
     }
 
     fun modeSupportThreshold(mode: ConfirmationMode, setupType: SetupType): Double {
-        val base = when (mode) {
-            ConfirmationMode.CONSERVATIVE -> 3.2
-            ConfirmationMode.MODERATE -> 2.5
-            ConfirmationMode.AGGRESSIVE -> 1.9
-            ConfirmationMode.LENIENT -> 1.35
-        }
+        val config = configFor(mode)
+        val base = config.supportThreshold
         return if (setupType == SetupType.BREAKOUT && mode != ConfirmationMode.CONSERVATIVE) base - 0.1 else base
     }
 
-    fun minimumCoreRequired(mode: ConfirmationMode): Int {
-        return when (mode) {
-            ConfirmationMode.CONSERVATIVE -> 5
-            ConfirmationMode.MODERATE -> 4
-            ConfirmationMode.AGGRESSIVE -> 3
-            ConfirmationMode.LENIENT -> 3
-        }
-    }
+    fun minimumCoreRequired(mode: ConfirmationMode): Int = configFor(mode).minimumCoreRequired
 
-    fun biasActivationThreshold(mode: ConfirmationMode): Double {
-        return when (mode) {
-            ConfirmationMode.CONSERVATIVE -> 6.2
-            ConfirmationMode.MODERATE -> 5.4
-            ConfirmationMode.AGGRESSIVE -> 4.7
-            ConfirmationMode.LENIENT -> 3.9
-        }
-    }
+    fun biasActivationThreshold(mode: ConfirmationMode): Double = configFor(mode).biasActivationThreshold
 
-    fun topDownDirectionalThreshold(mode: ConfirmationMode): Double {
-        return when (mode) {
-            ConfirmationMode.CONSERVATIVE -> 0.55
-            ConfirmationMode.MODERATE -> 0.45
-            ConfirmationMode.AGGRESSIVE -> 0.35
-            ConfirmationMode.LENIENT -> 0.22
-        }
-    }
+    fun topDownDirectionalThreshold(mode: ConfirmationMode): Double = configFor(mode).topDownDirectionalThreshold
 
-    fun confluenceGateForMode(mode: ConfirmationMode): Double {
-        return when (mode) {
-            ConfirmationMode.CONSERVATIVE -> 0.58
-            ConfirmationMode.MODERATE -> 0.50
-            ConfirmationMode.AGGRESSIVE -> 0.42
-            ConfirmationMode.LENIENT -> 0.30
-        }
-    }
+    fun confluenceGateForMode(mode: ConfirmationMode): Double = configFor(mode).confluenceGate
 
     fun analyzeCandlestickPatterns(
         candles: List<MarketCandle>,

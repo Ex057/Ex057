@@ -56,6 +56,7 @@ internal data class StrategyEvaluation(
     val bias: TradeBias,
     val approved: Boolean,
     val decision: TradeDecision,
+    val rejectionReasons: List<String>,
     val confidence: Int,
     val confirmations: List<Confirmation>,
     val topDownBullScore: Double,
