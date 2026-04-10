@@ -44,6 +44,7 @@ import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.SyncAlt
 import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -90,6 +91,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.ex57.capital.ai.AiInsightContext
+import com.ex57.capital.ai.AiInsightContextBuilder
+import com.ex57.capital.ai.AiInsightQuickAction
+import com.ex57.capital.ai.AiInsightResponse
+import com.ex57.capital.ai.AiInsightsUiState
+import com.ex57.capital.ai.AiInsightsViewModel
 import com.ex57.capital.analysis.AnalysisSupport
 import com.ex57.capital.analysis.AnalysisStub
 import com.ex57.capital.analysis.PositionSizingEngine
@@ -283,6 +290,7 @@ private fun defaultLotInputFor(symbol: TradingSymbol): String = formatLot(symbol
 @Composable
 fun EX57App() {
     val priceViewModel: PriceViewModel = viewModel()
+    val aiInsightsViewModel: AiInsightsViewModel = viewModel()
     val livePrice by priceViewModel.price.collectAsState()
     val recentPrices by priceViewModel.priceHistory.collectAsState()
     val candleHistory by priceViewModel.candleHistory.collectAsState()
@@ -294,6 +302,7 @@ fun EX57App() {
     val closedTrades by priceViewModel.closedTrades.collectAsState()
     val pendingOrders by priceViewModel.pendingOrders.collectAsState()
     val demoBalance by priceViewModel.demoBalance.collectAsState()
+    val aiInsightsState by aiInsightsViewModel.uiState.collectAsState()
     val darkTheme = androidx.compose.foundation.isSystemInDarkTheme()
     var selectedTab by rememberSaveable { mutableStateOf(AppTab.HOME) }
     var selectedSymbol by remember { mutableStateOf(SupportedSymbols.first()) }
@@ -311,6 +320,47 @@ fun EX57App() {
     var chartDensity by rememberSaveable { mutableStateOf(ChartDensity.STANDARD) }
     var chartPinchZoomScale by rememberSaveable { mutableStateOf(1f) }
     val colors = MaterialTheme.colorScheme
+    val activeOpenPosition = openPositions.filter {
+        it.symbolCode == selectedSymbol.code && it.timeframe == selectedTimeframe
+    }.maxByOrNull { it.openedAtEpochMillis }
+    val aiInsightContext = remember(
+        selectedSymbol,
+        selectedTimeframe,
+        selectedMode,
+        dataQuality,
+        feedState,
+        candleHistory,
+        candleStack,
+        analysisResult,
+        activeOpenPosition,
+        closedTrades,
+        livePrice
+    ) {
+        AiInsightContextBuilder.build(
+            symbol = selectedSymbol,
+            timeframe = selectedTimeframe,
+            mode = selectedMode,
+            dataQuality = dataQuality,
+            feedState = feedState,
+            candles = candleHistory,
+            candleStack = candleStack,
+            analysisResult = analysisResult,
+            openTrade = activeOpenPosition,
+            recentTrades = closedTrades,
+            livePrice = livePrice
+        )
+    }
+
+    LaunchedEffect(
+        selectedSymbol.code,
+        selectedTimeframe,
+        selectedMode,
+        analysisResult?.summary,
+        analysisResult?.decision,
+        activeOpenPosition?.id
+    ) {
+        aiInsightsViewModel.clear()
+    }
 
     val pageBackground = if (darkTheme) {
         Brush.verticalGradient(
@@ -477,9 +527,16 @@ fun EX57App() {
                         signalFilters = signalFilterSettings,
                         analysisResult = analysisResult,
                         signalReplayResult = signalReplayResult,
-                        openPosition = openPositions.filter {
-                            it.symbolCode == selectedSymbol.code && it.timeframe == selectedTimeframe
-                        }.maxByOrNull { it.openedAtEpochMillis },
+                        aiInsightContext = aiInsightContext,
+                        aiInsightsState = aiInsightsState,
+                        onAiInsightAction = { action ->
+                            aiInsightContext?.let { context ->
+                                aiInsightsViewModel.requestInsight(action, context)
+                            }
+                        },
+                        onRetryAiInsight = { aiInsightsViewModel.retry() },
+                        onClearAiInsight = { aiInsightsViewModel.clear() },
+                        openPosition = activeOpenPosition,
                         lotSizeInput = selectedLotSizeInput,
                         onLotSizeInputChange = { selectedLotSizeInput = it },
                         onOpenTrade = {
@@ -687,6 +744,11 @@ private fun HomeDashboard(
     signalFilters: SignalFilterSettings,
     analysisResult: AnalysisResult?,
     signalReplayResult: SignalReplayResult?,
+    aiInsightContext: AiInsightContext?,
+    aiInsightsState: AiInsightsUiState,
+    onAiInsightAction: (AiInsightQuickAction) -> Unit,
+    onRetryAiInsight: () -> Unit,
+    onClearAiInsight: () -> Unit,
     openPosition: TradePosition?,
     lotSizeInput: String,
     onLotSizeInputChange: (String) -> Unit,
@@ -718,6 +780,15 @@ private fun HomeDashboard(
         loadedCandleCount = candles.size,
         replayResult = signalReplayResult,
         onRunReplay = onRunSignalReplay
+    )
+    Spacer(modifier = Modifier.height(16.dp))
+    AiInsightsCard(
+        insightContext = aiInsightContext,
+        uiState = aiInsightsState,
+        onActionSelected = onAiInsightAction,
+        onRetry = onRetryAiInsight,
+        onClear = onClearAiInsight,
+        hasOpenTrade = openPosition != null
     )
     Spacer(modifier = Modifier.height(16.dp))
     SignalCard(
@@ -972,6 +1043,198 @@ private fun ModeChip(label: String) {
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onPrimaryContainer
         )
+    }
+}
+
+@Composable
+private fun AiInsightsCard(
+    insightContext: AiInsightContext?,
+    uiState: AiInsightsUiState,
+    onActionSelected: (AiInsightQuickAction) -> Unit,
+    onRetry: () -> Unit,
+    onClear: () -> Unit,
+    hasOpenTrade: Boolean
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+            contentColor = MaterialTheme.colorScheme.onSurface
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("AI Insights", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "Independent market read from live Deriv data, plus optional engine-aware explanations.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 13.sp
+                    )
+                }
+                ModeChip(uiState.provider.label)
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            Text(
+                if (insightContext == null) {
+                    "Connect a feed first. Market Deep Dive needs live price plus loaded candles."
+                } else {
+                    "Market Deep Dive uses independent candle structure for ${insightContext.symbolCode} on ${insightContext.timeframe}. Other actions still use engine context when available."
+                },
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            val actionRows = listOf(
+                listOf(
+                    AiInsightQuickAction.MARKET_DEEP_DIVE,
+                    AiInsightQuickAction.EXPLAIN_SIGNAL,
+                    AiInsightQuickAction.EXPLAIN_RISK
+                ),
+                listOf(
+                    AiInsightQuickAction.WHY_NOT_ELIGIBLE,
+                    AiInsightQuickAction.SUMMARIZE_TRADE_PLAN,
+                    AiInsightQuickAction.MANAGE_OPEN_TRADE
+                )
+            )
+            actionRows.forEachIndexed { rowIndex, actions ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    actions.forEach { action ->
+                        val hasMarketContext = insightContext != null && insightContext.market.primaryCandleCount >= 20
+                        val hasEngineContext = insightContext?.signal != null
+                        val enabled = when (action) {
+                            AiInsightQuickAction.MARKET_DEEP_DIVE ->
+                                hasMarketContext && !uiState.isLoading
+                            AiInsightQuickAction.MANAGE_OPEN_TRADE ->
+                                hasEngineContext && hasOpenTrade && !uiState.isLoading
+                            else ->
+                                hasEngineContext && !uiState.isLoading
+                        }
+                        OutlinedButton(
+                            onClick = { onActionSelected(action) },
+                            enabled = enabled,
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp)
+                        ) {
+                            Text(
+                                action.label,
+                                fontSize = 11.sp,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                    repeat((3 - actions.size).coerceAtLeast(0)) {
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
+                }
+                if (rowIndex != actionRows.lastIndex) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            when {
+                uiState.isLoading -> {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Text(
+                            "Generating ${uiState.activeAction?.label?.lowercase() ?: "insight"}...",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+                uiState.errorMessage != null -> {
+                    Text(
+                        uiState.errorMessage,
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 12.sp
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = onRetry) {
+                            Text("Retry")
+                        }
+                        TextButton(onClick = onClear) {
+                            Text("Clear")
+                        }
+                    }
+                }
+                uiState.response != null -> {
+                    AiInsightResponseView(
+                        response = uiState.response,
+                        onRetry = onRetry,
+                        onClear = onClear
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AiInsightResponseView(
+    response: AiInsightResponse,
+    onRetry: () -> Unit,
+    onClear: () -> Unit
+) {
+    androidx.compose.material3.Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(response.title, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                Text(
+                    if (response.cached) "Cached" else response.provider.label,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 11.sp
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(response.summary, fontSize = 13.sp)
+            Spacer(modifier = Modifier.height(10.dp))
+            response.bullets.forEach { bullet ->
+                Text(
+                    "• $bullet",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                response.caution,
+                color = MaterialTheme.colorScheme.secondary,
+                fontSize = 11.sp
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onRetry) {
+                    Text("Retry")
+                }
+                TextButton(onClick = onClear) {
+                    Text("Clear")
+                }
+            }
+        }
     }
 }
 
