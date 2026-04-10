@@ -8,6 +8,64 @@ This document translates the notes in `futureIMP.docx` into an implementation-re
 2. Build a more reliable real-time feed architecture.
 3. Add persistent demo trading continuity.
 4. Improve UI transparency around connection, stale data, and trade decisions.
+5. Replace heuristic sizing, charting, and signal validation with instrument-aware and replay-backed behavior.
+
+## Prediction Analysis Rework Track
+
+Branch: `prediction-analysis-lab`
+
+### Why This Track Exists
+
+- Current lot sizing is not instrument-aware. The app maps `lotSize` to `stakeUsd` with a fixed multiplier, which cannot match Deriv index contract behavior, spread impact, or symbol-specific point value.
+- Current chart rendering is clipped to a fixed candle window and painted into a fixed canvas width, so the chart cannot scroll through a deeper live history like MT5.
+- Current signal evidence is still heuristic. It scores the latest market state, but it does not replay the strategy candle by candle and measure whether the entry logic actually performs.
+
+### Immediate Findings In The Current Code
+
+- `PriceViewModel` currently converts volume with a flat `lotSize * 10_000` model for both market and pending orders.
+- `DerivWebSocketClient` stores only a short rolling tick buffer and replaces visible candle history with the latest loaded stack.
+- `ChartCard` limits the Home chart to the latest `50` candles.
+- `ChartsPanel` limits the full chart screen to the latest `120` candles.
+- `PriceChart` compresses every candle into the current canvas width, so there is no real pan/scroll window.
+- `AnalysisSupport` and the related engine classes still produce dynamic but heuristic evidence instead of replay-derived trade statistics.
+
+### Rework Goals
+
+- Define symbol specifications for each tradable instrument:
+  - contract size
+  - minimum volume
+  - volume step
+  - tick size
+  - quoted spread handling
+  - pip or point value
+- Replace synthetic stake conversion with a position-sizing engine that calculates:
+  - monetary risk from stop distance
+  - estimated cost from spread and execution slippage
+  - valid volume rounded to the instrument step
+- Replace the fixed-width chart with a scrollable candle viewport that supports:
+  - larger local history
+  - pinch or zoom-ready spacing model
+  - auto-follow latest candle only when the user has not scrolled away
+- Add a replay engine that runs the same entry and exit rules over stored candles and produces:
+  - win rate
+  - expectancy
+  - drawdown
+  - setup-specific performance
+  - regime-specific performance by symbol and timeframe
+
+### Proposed Implementation Order
+
+1. Build a `SymbolSpec` layer and move lot validation out of the UI-facing `ViewModel`.
+2. Introduce a chart data repository with a larger retained candle window per symbol and timeframe.
+3. Replace the current chart canvas with a viewport-based renderer backed by horizontal scroll state.
+4. Build a replay and trade-labeling engine that can evaluate the current strategy on historical candles.
+5. Use replay results to tune thresholds in `StrategyEvaluator` and replace heuristic evidence in the UI.
+
+### External Reference Work
+
+- Review `Ex057/Kronos` for reusable architecture and model assumptions once repository access is available.
+- Compare its data ingestion, feature extraction, prediction pipeline, and evaluation loop against this branch before lifting any logic.
+- Do not merge prediction logic from `Kronos` directly until the contract model and evaluation metrics are aligned with Deriv instruments.
 
 ## Progress Tracker
 
@@ -21,9 +79,38 @@ This document translates the notes in `futureIMP.docx` into an implementation-re
 - [x] Fixed oversized settings text and unstable mode preset buttons on large-font devices.
 - [x] Exposed the demo simulator more clearly in the UI.
 - [x] Started a broader visual cleanup for header scaling and key dashboard cards.
-- [ ] Centralize analysis thresholds into config.
-- [ ] Add explicit rejection-reason output.
-- [ ] Add fuller demo account continuity and management UX.
+- [x] Renamed `Backtest` to `Demo View`.
+- [x] Removed legacy backtesting content from that screen.
+- [x] Reworked `Demo View` toward a simpler terminal-style running-trades screen.
+- [x] Added explicit lot size / volume input for opening demo trades.
+- [x] Showed live dollar profit/loss motion per running trade.
+- [x] Added account metrics such as balance, equity, margin, free margin, and margin level.
+- [x] Added first-pass trade management automation for scaling out and stop adjustment.
+- [x] Allowed more than one demo entry on the same pair/timeframe.
+- [x] Moved trade closing responsibility away from Home and into `Demo View`.
+- [x] Added a safer guarded close interaction in `Demo View`.
+- [x] Introduced a first side management panel for `Demo View`.
+- [x] Shifted `Demo View` styling closer to an MT5-like light trade-terminal layout.
+- [x] Removed the old `Markets` tab from the main navigation.
+- [x] Renamed `Demo View` to `Trades` to match its actual purpose.
+- [x] Split closed trades into a dedicated `History` screen.
+- [x] Added MT5-style right-to-left swipe management actions on live trades.
+- [x] Removed the left-side trade rail and rebuilt `Trades` as a full-width terminal surface.
+- [x] Removed empty-state copy from `Trades` so the terminal stays visually clean when no positions are open.
+- [x] Tightened `Trades` and `History` rows to fit more records on screen at once.
+- [x] Restored the ability to add another trade on the same pair/timeframe from Home.
+- [x] Reduced accidental auto-closes by requiring stop/target or management thresholds to be crossed by live movement, not merely rediscovered after reconnect.
+- [x] Made swipe actions settle back after use so trade management feels less sticky.
+- [x] Added clearer close context in `History` rows.
+- [x] Reworked `History` toward an MT5-style terminal layout with period filtering and tap-for-details trade popups.
+- [x] Refined `Trades` with a simpler MT5-style terminal layout, icon-based swipe actions, and close confirmation.
+- [x] Removed the old Alerts screen from the main flow and replaced it with a chart-focused screen.
+- [x] Expanded `Trades`, `History`, and `Charts` to use screen space more efficiently with less wasted header copy.
+- [x] Centralize analysis thresholds into config.
+- [x] Add explicit rejection-reason output.
+- [x] Add fuller demo account continuity and management UX.
+- [x] Add fuller swipe actions such as modify / partial close / chart jump.
+- [x] Add explicit pending-order style secondary entries, not only stacked market entries.
 
 ## Primary Problems To Solve
 
@@ -46,6 +133,8 @@ This document translates the notes in `futureIMP.docx` into an implementation-re
 
 - Demo positions should survive app restart and reconnect.
 - Balance, floating PnL, and last known market state should be restored locally.
+- The current trade-monitoring view is still too generic and does not yet feel like a live trade terminal.
+- The current trade terminal still needs fuller management actions and clearer order/deal separation.
 
 ## Desired After-State
 
@@ -56,6 +145,10 @@ After this implementation:
 - Active subscriptions recover after reconnect.
 - Tick buffering and local candle building keep analysis stable.
 - Demo trades, balance, and last signal state survive app restarts.
+- The old `Backtest` tab becomes a dedicated `Trades` tab for running trades.
+- A dedicated `History` tab shows closed deals and exit outcomes.
+- Open demo trades show live positive/negative dollar movement clearly.
+- The demo screen feels like a trading terminal instead of a report page.
 - Users can see why a trade was rejected, downgraded, or approved.
 - Threshold tuning becomes easier and safer to iterate.
 
@@ -209,17 +302,26 @@ Responsible for:
 
 - Keep demo account state after app close and reopen.
 - Track floating PnL from live ticks and restore open positions.
-- Support later expansion into a stronger position-management screen.
+- Turn the old `Backtest` area into the main `Trades` terminal.
+- Support a more broker-terminal-like experience for monitoring and managing demo positions.
 
 ### Needed Data
 
 - demo balance
+- equity
+- used margin
+- free margin
+- margin level percent
 - open positions
 - closed positions
 - entry price
+- current price
+- lot size / volume
+- notional or stake
 - stop loss
 - take profit
 - size / risk amount
+- pnl dollars
 - floating PnL
 - updated timestamp
 
@@ -228,7 +330,77 @@ Responsible for:
 - Persistent demo account storage.
 - Persistent open/closed demo trade storage.
 - Demo trade engine integrated with live and cached prices.
-- Positions or Alerts UI that restores and updates open demo trades.
+- `Trades` UI that restores and updates open demo trades.
+- Live per-position P/L in both dollars and percent.
+- Track/reconnect flow so a user can resume motion on a selected trade pair.
+- Volume or lot-size selection when opening a demo trade.
+- First-pass automated management rules for break-even and partial scale-out behavior.
+
+### Trades Product Direction
+
+The old `Backtest` tab should be repurposed into `Trades`.
+
+This screen should no longer be a backtesting/report surface. Its job is:
+
+- show the account health summary
+- show all running demo trades
+- show each trade's live movement in dollars and percent
+- allow the user to reconnect or focus a trade pair quickly
+- feel visually closer to an MT5-style trade terminal
+
+### Trades Target Layout
+
+#### Header / Account Summary
+
+- dark, high-contrast terminal-like presentation
+- floating total P/L centered and visually dominant
+- account metrics clearly grouped:
+  - balance
+  - equity
+  - margin
+  - free margin
+  - margin level percent
+
+#### Running Trades List
+
+Each row should show:
+
+- symbol
+- side
+- lot size
+- entry price
+- current price
+- individual P/L in dollars
+- individual P/L in percent
+- optional stop loss / take profit state
+
+#### Interaction Model
+
+Near-term implementation:
+
+- tap or button-based actions are acceptable
+- `Track Live` should reconnect the feed for that trade symbol
+- close / modify actions can begin as explicit controls
+
+Later polish:
+
+- swipe actions for close / modify / chart
+- long-press context actions
+
+### Margin Model Requirements
+
+The demo engine should begin calculating these in real time:
+
+- `Equity = Balance + floating P/L`
+- `Free Margin = Equity - Used Margin`
+- `Margin Level % = (Equity / Used Margin) * 100`
+
+The app should also define warning thresholds such as:
+
+- margin call threshold
+- stop out threshold
+
+These do not have to fully auto-liquidate in the first pass, but the model should be designed so that can be added.
 
 ## Workstream 4: UX Transparency
 
@@ -258,6 +430,9 @@ Responsible for:
 - Rework settings controls so large-font devices do not break preset buttons or switches.
 - Make the demo simulator visible without the user needing to infer it from trade buttons alone.
 - Raise the overall visual quality of the interface instead of only patching functionality.
+- Replace the current report-style demo/trade view with a denser terminal-style layout.
+- Prioritize legibility of live P/L movement, equity, and margin health.
+- Make margin level visually more urgent when it enters danger thresholds.
 - Display rejection reasons like:
   - directional strength below threshold
   - confluence below threshold
@@ -318,6 +493,8 @@ Responsible for:
 - Restore open trades on app launch.
 - Resume floating PnL updates when feed reconnects.
 - Support manual close plus TP/SL closure logic.
+- Add lot-size-aware demo positions and account metric calculations.
+- Move the running-trade terminal fully into `Trades`.
 
 ### Phase 7: UI Reliability and Explanations
 
@@ -325,6 +502,8 @@ Responsible for:
 - Add stale/live labels and timestamps.
 - Show trade decision reasons and downgrade causes.
 - Ensure chart and positions screens remain informative while offline/stale.
+- Redesign `Trades` with an MT5-style summary-and-positions hierarchy.
+- Remove residual backtesting copy and labels from the repurposed tab.
 
 ### Phase 8: Validation
 
@@ -381,8 +560,9 @@ Responsible for:
 4. Add tick buffer and candle builder.
 5. Add persistence for candles and demo state.
 6. Add demo trade continuity.
-7. Upgrade UI state visibility and rejection explanations.
-8. Tune thresholds with observed behavior and tests.
+7. Convert `Backtest` into `Trades` and implement the terminal-style trade screen.
+8. Upgrade UI state visibility and rejection explanations.
+9. Tune thresholds with observed behavior and tests.
 
 ## Definition Of Done
 
