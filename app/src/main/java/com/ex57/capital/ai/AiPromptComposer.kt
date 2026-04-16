@@ -33,7 +33,7 @@ class AiPromptComposer(
         val context = request.context
         val task = when (request.action) {
             AiInsightQuickAction.MARKET_DEEP_DIVE ->
-                "Do an independent market read from the structured live market snapshot only. Infer direction, pressure, volatility, and what would confirm or weaken the read. Do not reuse app-specific confirmation labels."
+                "Do an independent market read from the structured live market snapshot only. Infer direction, pressure, volatility, and what would confirm or weaken the read. Do not reuse app-specific confirmation labels. Return a directional bias as long, short, no trade, or wait for setup."
             AiInsightQuickAction.EXPLAIN_SIGNAL ->
                 "Explain why the engine currently reads this setup the way it does. Focus on bias, confirmation groups, and what matters most right now."
             AiInsightQuickAction.EXPLAIN_RISK ->
@@ -79,6 +79,7 @@ class AiPromptComposer(
                                     .put("range_percent", snapshot.rangePercent)
                                     .put("change_percent", snapshot.changePercent)
                                     .put("last_close", snapshot.lastClose ?: "")
+                                    .put("recent_ohlc", JSONArray(snapshot.recentOhlc))
                             )
                         }
                     })

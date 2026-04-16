@@ -78,7 +78,7 @@ object AiInsightContextBuilder {
                     traderGuidance = it.traderGuidance,
                     nextTrigger = it.nextTrigger,
                     forecastSummary = it.forecastResearch?.summary,
-                    performanceSummary = it.performanceFeedback?.summary,
+                    performanceSummary = null,
                     rejectionReasons = it.rejectionReasons.take(4)
                 )
             },
@@ -109,10 +109,7 @@ object AiInsightContextBuilder {
                     expectancyR = it.evidence.expectancyR,
                     profitFactor = it.evidence.profitFactor,
                     lastOutcomes = it.evidence.lastOutcomes.take(5),
-                    realizedSummary = when {
-                        realizedTradeCount == 0 -> "No recent realized trades recorded for this symbol and timeframe."
-                        else -> "Recent realized trades: $realizedTradeCount, win rate ${realizedWinRate ?: 0}%, net ${formatSignedUsd(realizedNetPnlUsd ?: 0.0)}."
-                    },
+                    realizedSummary = "Realized trade memory is disabled for signal generation.",
                     realizedTradeCount = realizedTradeCount,
                     realizedWinRate = realizedWinRate,
                     realizedNetPnlUsd = realizedNetPnlUsd
@@ -131,18 +128,7 @@ object AiInsightContextBuilder {
                     rationale = position.rationale
                 )
             },
-            recentTrades = scopedTrades.map {
-                AiRecentTradeSnapshot(
-                    side = it.side.label,
-                    lotSize = formatLot(it.lotSize),
-                    openedAtLabel = formatTimestamp(it.openedAtEpochMillis),
-                    closedAtLabel = formatTimestamp(it.closedAtEpochMillis),
-                    outcome = it.outcomeLabel,
-                    pnlUsd = formatSignedUsd(it.pnlUsd),
-                    pnlPercent = formatPercentSigned(it.pnlPercent),
-                    rationale = it.rationale
-                )
-            }
+            recentTrades = emptyList()
         )
         return context.copy(analysisHash = hashContext(context))
     }
@@ -208,7 +194,11 @@ object AiInsightContextBuilder {
             changePercent = percentString(trimmed.takeIf { it.size >= 2 }?.let {
                 percentMove(it.first().open, it.last().close)
             }),
-            lastClose = formatPrice(trimmed.lastOrNull()?.close, symbol.spec.pricePrecision)
+            lastClose = formatPrice(trimmed.lastOrNull()?.close, symbol.spec.pricePrecision),
+            recentOhlc = trimmed.takeLast(12).map { candle ->
+                listOf(candle.open, candle.high, candle.low, candle.close)
+                    .joinToString(prefix = "[", postfix = "]") { value -> formatPrice(value, symbol.spec.pricePrecision) ?: "-" }
+            }
         )
     }
 

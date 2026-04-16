@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -17,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -98,9 +101,9 @@ val SupportedSymbols = listOf(
         "cryBTCUSD",
         spec = symbolSpec(
             contractSize = 1.0,
-            minLot = 0.01,
+            minLot = 0.001,
             maxLot = 5.0,
-            lotStep = 0.01,
+            lotStep = 0.001,
             typicalSpread = 30.0,
             effectiveLeverage = 50.0,
             tickSize = 0.01,
@@ -114,9 +117,9 @@ val SupportedSymbols = listOf(
         "cryETHUSD",
         spec = symbolSpec(
             contractSize = 1.0,
-            minLot = 0.01,
+            minLot = 0.001,
             maxLot = 10.0,
-            lotStep = 0.01,
+            lotStep = 0.001,
             typicalSpread = 3.0,
             effectiveLeverage = 50.0,
             tickSize = 0.01,
@@ -172,10 +175,10 @@ fun ControlsPanel(
     onTimeframeChange: (String) -> Unit,
     selectedMode: ConfirmationMode,
     onModeChange: (ConfirmationMode) -> Unit,
-    onConnect: () -> Unit,
-    onAnalyze: () -> Unit,
-    lotSizeInput: String,
-    onLotSizeInputChange: (String) -> Unit
+    onAnalyzeMarket: () -> Unit,
+    isAnalyzingMarket: Boolean,
+    riskPercentInput: String,
+    onRiskPercentInputChange: (String) -> Unit
 ) {
     val selectedCategory = selectedSymbol.category
     val symbolsInCategory = remember(selectedCategory) {
@@ -235,42 +238,40 @@ fun ControlsPanel(
             )
             Spacer(modifier = Modifier.height(12.dp))
             OutlinedTextField(
-                value = lotSizeInput,
+                value = riskPercentInput,
                 onValueChange = { updated ->
-                    if (updated.isEmpty() || updated.matches(Regex("^\\d{0,3}(\\.\\d{0,3})?$"))) {
-                        onLotSizeInputChange(updated)
+                    if (updated.isEmpty() || updated.matches(Regex("^\\d{0,2}(\\.\\d{0,2})?$"))) {
+                        onRiskPercentInputChange(updated)
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("Lot Size") },
+                label = { Text("Risk % per signal") },
                 supportingText = {
                     Text(
-                        "Broker-style sizing for ${selectedSymbol.code}: min ${formatLot(selectedSymbol.spec.minLot)}, step ${formatLot(selectedSymbol.spec.lotStep)}, max ${formatLot(selectedSymbol.spec.maxLot)}."
+                        "Sizing uses equity, stop distance, and ${selectedSymbol.code} contract rules: min ${formatLot(selectedSymbol.spec.minLot)}, step ${formatLot(selectedSymbol.spec.lotStep)}."
                     )
                 },
                 singleLine = true
             )
             Spacer(modifier = Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(
-                    onClick = onConnect,
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = MaterialTheme.colorScheme.primary
+            Button(
+                onClick = onAnalyzeMarket,
+                enabled = !isAnalyzingMarket,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary
+                )
+            ) {
+                if (isAnalyzingMarket) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary
                     )
-                ) {
-                    Text("Connect Feed")
+                    Spacer(modifier = Modifier.width(8.dp))
                 }
-                Button(
-                    onClick = onAnalyze,
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = MaterialTheme.colorScheme.onPrimary
-                    )
-                ) {
-                    Text("Analyze")
-                }
+                Text(if (isAnalyzingMarket) "Analysing Market" else "Analyse Market")
             }
         }
     }

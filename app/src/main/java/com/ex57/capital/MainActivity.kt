@@ -1,11 +1,11 @@
 package com.ex57.capital
 
 import android.os.Bundle
+import android.content.Context
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
@@ -38,11 +38,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ShowChart
 import androidx.compose.material.icons.outlined.CallSplit
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.SyncAlt
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Button
@@ -86,6 +84,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -97,12 +96,12 @@ import com.ex57.capital.ai.AiInsightQuickAction
 import com.ex57.capital.ai.AiInsightResponse
 import com.ex57.capital.ai.AiInsightsUiState
 import com.ex57.capital.ai.AiInsightsViewModel
-import com.ex57.capital.analysis.AnalysisSupport
+import com.ex57.capital.ai.AiProvider
+import com.ex57.capital.ai.AiProviderConfig
 import com.ex57.capital.analysis.AnalysisStub
 import com.ex57.capital.analysis.PositionSizingEngine
 import com.ex57.capital.data.PriceViewModel
 import com.ex57.capital.model.AnalysisResult
-import com.ex57.capital.model.ClosedTradeRecord
 import com.ex57.capital.model.ConfirmationMode
 import com.ex57.capital.model.DataQuality
 import com.ex57.capital.model.FeedPhase
@@ -112,7 +111,6 @@ import com.ex57.capital.model.MarketCandle
 import com.ex57.capital.model.PositionRecommendation
 import com.ex57.capital.model.SignalFilterSettings
 import com.ex57.capital.model.PositionSide
-import com.ex57.capital.model.TradePerformanceFeedback
 import com.ex57.capital.model.TradePosition
 import com.ex57.capital.model.TradeBias
 import com.ex57.capital.model.TradeDecision
@@ -122,12 +120,11 @@ import com.ex57.capital.ui.DropdownField
 import com.ex57.capital.ui.SupportedSymbols
 import com.ex57.capital.ui.SupportedTimeframes
 import com.ex57.capital.ui.formatLot
+import com.ex57.capital.ui.theme.AppThemeMode
 import com.ex57.capital.ui.theme.EX57Theme
 import java.time.Instant
-import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import java.time.temporal.ChronoUnit
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -145,8 +142,23 @@ class MainActivity : ComponentActivity() {
             )
         )
         setContent {
-            EX57Theme {
-                EX57App()
+            val context = LocalContext.current
+            val prefs = remember { context.getSharedPreferences("display_settings", Context.MODE_PRIVATE) }
+            var themeMode by rememberSaveable {
+                mutableStateOf(
+                    prefs.getString("theme_mode", null)
+                        ?.let { runCatching { AppThemeMode.valueOf(it) }.getOrNull() }
+                        ?: AppThemeMode.SYSTEM
+                )
+            }
+            EX57Theme(themeMode = themeMode) {
+                EX57App(
+                    themeMode = themeMode,
+                    onThemeModeChange = { updated ->
+                        themeMode = updated
+                        prefs.edit().putString("theme_mode", updated.name).apply()
+                    }
+                )
             }
         }
     }
@@ -169,18 +181,6 @@ private enum class AppTab(
         icon = Icons.AutoMirrored.Outlined.ShowChart,
         title = "Charts",
         subtitle = "Full chart view with timeframe access and live feed context."
-    ),
-    TRADES(
-        label = "Trades",
-        icon = Icons.Outlined.SyncAlt,
-        title = "Trades",
-        subtitle = "Monitor live demo positions, margin health, and trade management."
-    ),
-    HISTORY(
-        label = "History",
-        icon = Icons.Outlined.History,
-        title = "History",
-        subtitle = "Review closed demo deals and see what actually happened."
     ),
     SETTINGS(
         label = "Settings",
@@ -220,37 +220,6 @@ private data class AlertMonitorState(
     val lastCheckLabel: String = "Not started"
 )
 
-private data class SignalReplaySample(
-    val signalAtEpochMillis: Long,
-    val bias: TradeBias,
-    val confidence: Int,
-    val netMovePercent: Double,
-    val win: Boolean,
-    val resolution: String
-)
-
-private data class SignalReplayResult(
-    val symbolCode: String,
-    val stackLabel: String,
-    val modeLabel: String,
-    val lookaheadCandles: Int,
-    val scannedWindows: Int,
-    val eligibleSignals: Int,
-    val watchlistSignals: Int,
-    val winRatePercent: Int,
-    val coveragePercent: Int,
-    val averageConfidence: Int,
-    val averageNetMovePercent: Double,
-    val note: String,
-    val recentSignals: List<SignalReplaySample>
-)
-
-private data class SignalReplayOutcome(
-    val win: Boolean,
-    val netMovePercent: Double,
-    val resolution: String
-)
-
 private val AlertMonitorIntervals = listOf(5, 15, 30, 60)
 private val SignalFilterSettingsSaver = listSaver<SignalFilterSettings, Boolean>(
     save = {
@@ -285,10 +254,11 @@ private enum class ChartDensity(val label: String, val candleSpacing: Int) {
     WIDE("Wide", 18)
 }
 
-private fun defaultLotInputFor(symbol: TradingSymbol): String = formatLot(symbol.spec.minLot)
-
 @Composable
-fun EX57App() {
+fun EX57App(
+    themeMode: AppThemeMode,
+    onThemeModeChange: (AppThemeMode) -> Unit
+) {
     val priceViewModel: PriceViewModel = viewModel()
     val aiInsightsViewModel: AiInsightsViewModel = viewModel()
     val livePrice by priceViewModel.price.collectAsState()
@@ -299,10 +269,10 @@ fun EX57App() {
     val feedState by priceViewModel.feedState.collectAsState()
     val connectedFeed by priceViewModel.symbol.collectAsState()
     val openPositions by priceViewModel.openPositions.collectAsState()
-    val closedTrades by priceViewModel.closedTrades.collectAsState()
     val pendingOrders by priceViewModel.pendingOrders.collectAsState()
     val demoBalance by priceViewModel.demoBalance.collectAsState()
     val aiInsightsState by aiInsightsViewModel.uiState.collectAsState()
+    val aiProviderConfig by aiInsightsViewModel.config.collectAsState()
     val darkTheme = androidx.compose.foundation.isSystemInDarkTheme()
     var selectedTab by rememberSaveable { mutableStateOf(AppTab.HOME) }
     var selectedSymbol by remember { mutableStateOf(SupportedSymbols.first()) }
@@ -310,16 +280,17 @@ fun EX57App() {
     var selectedMode by rememberSaveable { mutableStateOf(ConfirmationMode.MODERATE) }
     var signalFilterSettings by rememberSaveable(stateSaver = SignalFilterSettingsSaver) { mutableStateOf(SignalFilterSettings()) }
     var analysisResult by remember { mutableStateOf<AnalysisResult?>(null) }
-    var selectedLotSizeInput by rememberSaveable { mutableStateOf(defaultLotInputFor(SupportedSymbols.first())) }
+    var riskPercentInput by rememberSaveable { mutableStateOf("1.0") }
     var alertHistory by remember { mutableStateOf<List<SignalAlertEntry>>(emptyList()) }
     var alertMonitor by remember { mutableStateOf(AlertMonitorState()) }
-    var signalReplayResult by remember { mutableStateOf<SignalReplayResult?>(null) }
+    var isAnalyzingMarket by rememberSaveable { mutableStateOf(false) }
     var autoAnalyzeLiveFeed by rememberSaveable { mutableStateOf(false) }
     var keepAlertHistory by rememberSaveable { mutableStateOf(true) }
     var chartFollowLatest by rememberSaveable { mutableStateOf(true) }
     var chartDensity by rememberSaveable { mutableStateOf(ChartDensity.STANDARD) }
     var chartPinchZoomScale by rememberSaveable { mutableStateOf(1f) }
     val colors = MaterialTheme.colorScheme
+    val coroutineScope = rememberCoroutineScope()
     val activeOpenPosition = openPositions.filter {
         it.symbolCode == selectedSymbol.code && it.timeframe == selectedTimeframe
     }.maxByOrNull { it.openedAtEpochMillis }
@@ -333,7 +304,6 @@ fun EX57App() {
         candleStack,
         analysisResult,
         activeOpenPosition,
-        closedTrades,
         livePrice
     ) {
         AiInsightContextBuilder.build(
@@ -346,7 +316,7 @@ fun EX57App() {
             candleStack = candleStack,
             analysisResult = analysisResult,
             openTrade = activeOpenPosition,
-            recentTrades = closedTrades,
+            recentTrades = emptyList(),
             livePrice = livePrice
         )
     }
@@ -409,7 +379,7 @@ fun EX57App() {
             timeframe = selectedTimeframe,
             mode = selectedMode,
             signalFilters = signalFilterSettings,
-            closedTrades = closedTrades,
+            closedTrades = emptyList(),
             candles = candleHistory,
             candleStack = candleStack,
             recentPrices = recentPrices,
@@ -418,6 +388,22 @@ fun EX57App() {
         analysisResult = result
         if (recordAlert) {
             pushAlert(targetSymbol, result, source)
+        }
+    }
+
+    fun analyzeMarket(targetSymbol: TradingSymbol = selectedSymbol, source: String = "Manual") {
+        isAnalyzingMarket = true
+        analysisResult = null
+        coroutineScope.launch {
+            try {
+                priceViewModel.connect(targetSymbol.derivSymbol, selectedTimeframe)
+                delay(900)
+                priceViewModel.refreshCandles(targetSymbol.derivSymbol, selectedTimeframe)
+                delay(1_100)
+                runAnalysis(targetSymbol = targetSymbol, recordAlert = true, source = source)
+            } finally {
+                isAnalyzingMarket = false
+            }
         }
     }
 
@@ -442,15 +428,13 @@ fun EX57App() {
     }
 
     LaunchedEffect(selectedMode, signalFilterSettings) {
-        signalReplayResult = null
         if (analysisResult != null && candleHistory.isNotEmpty()) {
             runAnalysis(recordAlert = false, source = "Settings")
         }
     }
 
     LaunchedEffect(selectedSymbol.code) {
-        selectedLotSizeInput = defaultLotInputFor(selectedSymbol)
-        signalReplayResult = null
+        analysisResult = null
     }
 
     LaunchedEffect(alertMonitor.enabled, alertMonitor.symbol, alertMonitor.timeframe, alertMonitor.intervalMinutes) {
@@ -496,10 +480,16 @@ fun EX57App() {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
+                    .then(
+                        if (selectedTab == AppTab.CHARTS) {
+                            Modifier
+                        } else {
+                            Modifier.verticalScroll(rememberScrollState())
+                        }
+                    )
                     .padding(padding)
-                    .padding(horizontal = if (selectedTab == AppTab.HOME || selectedTab == AppTab.SETTINGS) 16.dp else 4.dp)
-                    .padding(bottom = 12.dp)
+                    .padding(horizontal = if (selectedTab == AppTab.HOME || selectedTab == AppTab.SETTINGS) 16.dp else 0.dp)
+                    .padding(bottom = if (selectedTab == AppTab.CHARTS) 0.dp else 12.dp)
             ) {
                 if (selectedTab == AppTab.HOME || selectedTab == AppTab.SETTINGS) {
                     FloatingHeader(tab = selectedTab)
@@ -514,19 +504,16 @@ fun EX57App() {
                         onSymbolChange = {
                             selectedSymbol = it
                             analysisResult = null
-                            signalReplayResult = null
                         },
                         selectedTimeframe = selectedTimeframe,
                         onTimeframeChange = {
                             selectedTimeframe = it
                             analysisResult = null
-                            signalReplayResult = null
                         },
                         selectedMode = selectedMode,
                         onModeChange = { selectedMode = it },
                         signalFilters = signalFilterSettings,
                         analysisResult = analysisResult,
-                        signalReplayResult = signalReplayResult,
                         aiInsightContext = aiInsightContext,
                         aiInsightsState = aiInsightsState,
                         onAiInsightAction = { action ->
@@ -537,63 +524,11 @@ fun EX57App() {
                         onRetryAiInsight = { aiInsightsViewModel.retry() },
                         onClearAiInsight = { aiInsightsViewModel.clear() },
                         openPosition = activeOpenPosition,
-                        lotSizeInput = selectedLotSizeInput,
-                        onLotSizeInputChange = { selectedLotSizeInput = it },
-                        onOpenTrade = {
-                            analysisResult?.let { result ->
-                                val opened = priceViewModel.openTrade(
-                                    symbol = selectedSymbol,
-                                    timeframe = selectedTimeframe,
-                                    analysisResult = result,
-                                    executionPrice = livePrice
-                                        ?: result.tradeSetup.entry
-                                        ?: candleHistory.lastOrNull()?.close
-                                        ?: recentPrices.lastOrNull()
-                                        ?: priceViewModel.latestKnownPrice(
-                                            selectedSymbol.derivSymbol,
-                                            selectedTimeframe
-                                        ),
-                                    lotSize = selectedLotSizeInput.toDoubleOrNull() ?: 0.10
-                                )
-                                if (opened) {
-                                    selectedTab = AppTab.TRADES
-                                    runAnalysis(recordAlert = false, source = "Position")
-                                }
-                            }
-                        },
-                        onPlacePendingTrade = {
-                            analysisResult?.let { result ->
-                                val placed = priceViewModel.placePendingOrder(
-                                    symbol = selectedSymbol,
-                                    timeframe = selectedTimeframe,
-                                    analysisResult = result,
-                                    lotSize = selectedLotSizeInput.toDoubleOrNull() ?: 0.10
-                                )
-                                if (placed) {
-                                    selectedTab = AppTab.TRADES
-                                }
-                            }
-                        },
-                        onConnect = {
-                            analysisResult = null
-                            signalReplayResult = null
-                            priceViewModel.connect(selectedSymbol.derivSymbol, selectedTimeframe)
-                        },
-                        onAnalyze = {
-                            signalReplayResult = null
-                            priceViewModel.refreshCandles(selectedSymbol.derivSymbol, selectedTimeframe)
-                            runAnalysis(recordAlert = true, source = "Manual")
-                        },
-                        onRunSignalReplay = {
-                            signalReplayResult = runSignalReplay(
-                                symbol = selectedSymbol,
-                                timeframe = selectedTimeframe,
-                                mode = selectedMode,
-                                signalFilters = signalFilterSettings,
-                                candles = candleHistory,
-                                candleStack = candleStack
-                            )
-                        },
+                        riskPercentInput = riskPercentInput,
+                        onRiskPercentInputChange = { riskPercentInput = it },
+                        accountEquityUsd = demoBalance,
+                        onAnalyzeMarket = { analyzeMarket(source = "Manual") },
+                        isAnalyzingMarket = isAnalyzingMarket,
                         candles = candleHistory,
                         dataQuality = dataQuality,
                         feedState = feedState
@@ -604,7 +539,6 @@ fun EX57App() {
                         onTimeframeChange = {
                             selectedTimeframe = it
                             analysisResult = null
-                            signalReplayResult = null
                         },
                         livePrice = livePrice,
                         recentPrices = recentPrices,
@@ -618,65 +552,8 @@ fun EX57App() {
                         onChartDensityChange = { chartDensity = it },
                         pinchZoomScale = chartPinchZoomScale,
                         onPinchZoomScaleChange = { chartPinchZoomScale = it },
-                        onConnect = {
-                            priceViewModel.connect(selectedSymbol.derivSymbol, selectedTimeframe)
-                        },
-                        onAnalyze = {
-                            signalReplayResult = null
-                            priceViewModel.refreshCandles(selectedSymbol.derivSymbol, selectedTimeframe)
-                            runAnalysis(recordAlert = true, source = "Chart")
-                        }
-                    )
-                    AppTab.TRADES -> TradesPanel(
-                        openPositions = openPositions,
-                        pendingOrders = pendingOrders,
-                        demoBalance = demoBalance,
-                        livePrice = livePrice,
-                        connectedFeed = connectedFeed,
-                        resolveLatestKnownPrice = { position ->
-                            priceViewModel.latestKnownPrice(position.derivSymbol, position.timeframe)
-                        },
-                        onTrackPosition = { position ->
-                            selectedSymbol = SupportedSymbols.firstOrNull { it.derivSymbol == position.derivSymbol }
-                                ?: selectedSymbol
-                            selectedTimeframe = position.timeframe
-                            analysisResult = null
-                            signalReplayResult = null
-                            selectedTab = AppTab.TRADES
-                            priceViewModel.connect(position.derivSymbol, position.timeframe)
-                        },
-                        onChartPosition = { position ->
-                            selectedSymbol = SupportedSymbols.firstOrNull { it.derivSymbol == position.derivSymbol }
-                                ?: selectedSymbol
-                            selectedTimeframe = position.timeframe
-                            analysisResult = null
-                            signalReplayResult = null
-                            selectedTab = AppTab.CHARTS
-                            priceViewModel.connect(position.derivSymbol, position.timeframe)
-                        },
-                        onPartialClosePosition = { position ->
-                            val exitPrice = if (position.derivSymbol == connectedFeed) {
-                                livePrice
-                            } else {
-                                priceViewModel.latestKnownPrice(position.derivSymbol, position.timeframe)
-                            }
-                            priceViewModel.partialCloseTradeById(position.id, exitPrice, 0.25)
-                        },
-                        onClosePosition = { position: TradePosition ->
-                            val exitPrice = if (position.derivSymbol == connectedFeed) {
-                                livePrice
-                            } else {
-                                priceViewModel.latestKnownPrice(position.derivSymbol, position.timeframe)
-                            }
-                            priceViewModel.closeTradeById(position.id, exitPrice)
-                        },
-                        onCancelPendingOrder = { orderId ->
-                            priceViewModel.cancelPendingOrder(orderId)
-                        }
-                    )
-                    AppTab.HISTORY -> HistoryPanel(
-                        closedTrades = closedTrades,
-                        demoBalance = demoBalance
+                        onAnalyzeMarket = { analyzeMarket(source = "Chart") },
+                        isAnalyzingMarket = isAnalyzingMarket
                     )
                     AppTab.SETTINGS -> SettingsPanel(
                         selectedMode = selectedMode,
@@ -684,8 +561,18 @@ fun EX57App() {
                         signalFilters = signalFilterSettings,
                         onSignalFiltersChange = {
                             signalFilterSettings = it
-                            signalReplayResult = null
                         },
+                        aiProvider = aiInsightsState.provider,
+                        onAiProviderChange = { aiInsightsViewModel.updateProvider(it) },
+                        aiProviderConfig = aiProviderConfig,
+                        onOpenAiApiKeyChange = { aiInsightsViewModel.updateOpenAiApiKey(it) },
+                        onOpenAiModelChange = { aiInsightsViewModel.updateOpenAiModel(it) },
+                        onLocalAiBaseUrlChange = { aiInsightsViewModel.updateLocalAiBaseUrl(it) },
+                        onLocalAiModelChange = { aiInsightsViewModel.updateLocalAiModel(it) },
+                        onOllamaBaseUrlChange = { aiInsightsViewModel.updateOllamaBaseUrl(it) },
+                        onOllamaModelChange = { aiInsightsViewModel.updateOllamaModel(it) },
+                        themeMode = themeMode,
+                        onThemeModeChange = onThemeModeChange,
                         autoAnalyzeLiveFeed = autoAnalyzeLiveFeed,
                         onAutoAnalyzeChange = { autoAnalyzeLiveFeed = it },
                         keepAlertHistory = keepAlertHistory,
@@ -743,20 +630,17 @@ private fun HomeDashboard(
     onModeChange: (ConfirmationMode) -> Unit,
     signalFilters: SignalFilterSettings,
     analysisResult: AnalysisResult?,
-    signalReplayResult: SignalReplayResult?,
     aiInsightContext: AiInsightContext?,
     aiInsightsState: AiInsightsUiState,
     onAiInsightAction: (AiInsightQuickAction) -> Unit,
     onRetryAiInsight: () -> Unit,
     onClearAiInsight: () -> Unit,
     openPosition: TradePosition?,
-    lotSizeInput: String,
-    onLotSizeInputChange: (String) -> Unit,
-    onOpenTrade: () -> Unit,
-    onPlacePendingTrade: () -> Unit,
-    onConnect: () -> Unit,
-    onAnalyze: () -> Unit,
-    onRunSignalReplay: () -> Unit
+    riskPercentInput: String,
+    onRiskPercentInputChange: (String) -> Unit,
+    accountEquityUsd: Double,
+    onAnalyzeMarket: () -> Unit,
+    isAnalyzingMarket: Boolean
 ) {
     HeroCard(selectedMode)
     Spacer(modifier = Modifier.height(16.dp))
@@ -767,19 +651,10 @@ private fun HomeDashboard(
         onTimeframeChange = onTimeframeChange,
         selectedMode = selectedMode,
         onModeChange = onModeChange,
-        onConnect = onConnect,
-        onAnalyze = onAnalyze,
-        lotSizeInput = lotSizeInput,
-        onLotSizeInputChange = onLotSizeInputChange
-    )
-    Spacer(modifier = Modifier.height(16.dp))
-    SignalReplayCard(
-        selectedSymbol = selectedSymbol,
-        selectedTimeframe = selectedTimeframe,
-        signalFilters = signalFilters,
-        loadedCandleCount = candles.size,
-        replayResult = signalReplayResult,
-        onRunReplay = onRunSignalReplay
+        onAnalyzeMarket = onAnalyzeMarket,
+        isAnalyzingMarket = isAnalyzingMarket,
+        riskPercentInput = riskPercentInput,
+        onRiskPercentInputChange = onRiskPercentInputChange
     )
     Spacer(modifier = Modifier.height(16.dp))
     AiInsightsCard(
@@ -803,18 +678,9 @@ private fun HomeDashboard(
         signalFilters = signalFilters,
         analysisResult = analysisResult,
         openPosition = openPosition,
-        lotSizeInput = lotSizeInput,
-        onOpenTrade = onOpenTrade,
-        onPlacePendingTrade = onPlacePendingTrade
+        riskPercentInput = riskPercentInput,
+        accountEquityUsd = accountEquityUsd
     )
-    openPosition?.let {
-        Spacer(modifier = Modifier.height(12.dp))
-        ActivePositionCard(
-            position = it,
-            livePrice = livePrice,
-            analysisResult = analysisResult
-        )
-    }
 }
 
 @Composable
@@ -861,170 +727,6 @@ private fun HeroCard(selectedMode: ConfirmationMode) {
                 Spacer(modifier = Modifier.width(8.dp))
                 ModeChip(selectedMode.label)
             }
-        }
-    }
-}
-
-@Composable
-private fun SignalReplayCard(
-    selectedSymbol: TradingSymbol,
-    selectedTimeframe: String,
-    signalFilters: SignalFilterSettings,
-    loadedCandleCount: Int,
-    replayResult: SignalReplayResult?,
-    onRunReplay: () -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
-            contentColor = MaterialTheme.colorScheme.onSurface
-        )
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text("Signal Dry Run", fontSize = 18.sp, fontWeight = FontWeight.Bold)
-            Spacer(modifier = Modifier.height(8.dp))
-            val timeframePlan = remember(selectedTimeframe) { AnalysisSupport.buildTimeframePlan(selectedTimeframe) }
-            Text(
-                "Replay the loaded candles for ${selectedSymbol.code} using the active top-down stack. The higher layer sets bias, the middle layer defines structure, and the trigger layer times the entry.",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 13.sp
-            )
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                "Stack: ${timeframePlan.macro} bias -> ${timeframePlan.structure} structure -> ${timeframePlan.setup} setup -> ${timeframePlan.trigger} trigger",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 12.sp
-            )
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                if (signalFilters.hasOverrides()) {
-                    "Current replay uses your active research overrides."
-                } else {
-                    "Current replay uses the full guardrail stack."
-                },
-                color = if (signalFilters.hasOverrides()) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 12.sp
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            Button(
-                onClick = onRunReplay,
-                enabled = loadedCandleCount >= 40,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(if (replayResult == null) "Run Dry Run" else "Run Dry Run Again")
-            }
-            if (loadedCandleCount < 40) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    "Load more candles first. Dry run needs at least 40 closed candles on the current symbol.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 12.sp
-                )
-            }
-            replayResult?.let { result ->
-                Spacer(modifier = Modifier.height(14.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    CompactMetricCard(
-                        label = "Win Rate",
-                        value = "${result.winRatePercent}%",
-                        modifier = Modifier.weight(1f)
-                    )
-                    CompactMetricCard(
-                        label = "Signals",
-                        value = result.eligibleSignals.toString(),
-                        modifier = Modifier.weight(1f)
-                    )
-                    CompactMetricCard(
-                        label = "Coverage",
-                        value = "${result.coveragePercent}%",
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    CompactMetricCard(
-                        label = "Avg Move",
-                        value = formatPercentSigned(result.averageNetMovePercent),
-                        modifier = Modifier.weight(1f)
-                    )
-                    CompactMetricCard(
-                        label = "Watchlist",
-                        value = result.watchlistSignals.toString(),
-                        modifier = Modifier.weight(1f)
-                    )
-                    CompactMetricCard(
-                        label = "Avg Conf",
-                        value = "${result.averageConfidence}%",
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-                Spacer(modifier = Modifier.height(10.dp))
-                Text(
-                    "${result.symbolCode} • ${result.stackLabel} • ${result.modeLabel} • ${result.lookaheadCandles}-candle horizon",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 12.sp
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    result.note,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 12.sp
-                )
-                if (result.recentSignals.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text("Recent Replay Signals", fontWeight = FontWeight.SemiBold)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    result.recentSignals.forEachIndexed { index, sample ->
-                        SignalReplayRow(sample)
-                        if (index != result.recentSignals.lastIndex) {
-                            Spacer(modifier = Modifier.height(6.dp))
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SignalReplayRow(sample: SignalReplaySample) {
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f),
-        contentColor = MaterialTheme.colorScheme.onSurface,
-        shape = RoundedCornerShape(12.dp),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    "${sample.bias.label} • ${sample.confidence}%",
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 13.sp
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    "${formatTimestamp(sample.signalAtEpochMillis)} • ${sample.resolution}",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 11.sp
-                )
-            }
-            Text(
-                formatPercentSigned(sample.netMovePercent),
-                color = if (sample.win) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                fontWeight = FontWeight.Bold,
-                fontSize = 13.sp
-            )
         }
     }
 }
@@ -1098,8 +800,7 @@ private fun AiInsightsCard(
                 ),
                 listOf(
                     AiInsightQuickAction.WHY_NOT_ELIGIBLE,
-                    AiInsightQuickAction.SUMMARIZE_TRADE_PLAN,
-                    AiInsightQuickAction.MANAGE_OPEN_TRADE
+                    AiInsightQuickAction.SUMMARIZE_TRADE_PLAN
                 )
             )
             actionRows.forEachIndexed { rowIndex, actions ->
@@ -1251,9 +952,8 @@ private fun SignalCard(
     signalFilters: SignalFilterSettings,
     analysisResult: AnalysisResult?,
     openPosition: TradePosition? = null,
-    lotSizeInput: String,
-    onOpenTrade: () -> Unit = {},
-    onPlacePendingTrade: () -> Unit = {}
+    riskPercentInput: String,
+    accountEquityUsd: Double
 ) {
     val price by priceViewModel.price.collectAsState()
     val symbol by priceViewModel.symbol.collectAsState()
@@ -1322,7 +1022,7 @@ private fun SignalCard(
 
             if (analysisResult == null) {
                 Text(
-                    "Flow: pick a pair, connect the live feed, run Analyze, then review the chart and the trade plan before acting.",
+                    "Flow: pick a pair, tap Analyse Market, then review the fresh signal, chart, and risk-sized plan.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
@@ -1358,21 +1058,9 @@ private fun SignalCard(
                     ForecastResearchCard(research)
                     Spacer(modifier = Modifier.height(12.dp))
                 }
-                analysisResult.performanceFeedback?.let { feedback ->
-                    PerformanceFeedbackCard(feedback)
-                    Spacer(modifier = Modifier.height(12.dp))
-                }
                 ProcessFlowCard(
                     analysisResult = analysisResult,
                     selectedSymbol = selectedSymbol
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                ChartCard(
-                    prices = recentPrices,
-                    candles = candles,
-                    dataQuality = dataQuality,
-                    timeframe = selectedTimeframe,
-                    analysisResult = analysisResult
                 )
                 Spacer(modifier = Modifier.height(12.dp))
                 TradePlanCard(
@@ -1380,9 +1068,8 @@ private fun SignalCard(
                     analysisResult = analysisResult,
                     biasColor = biasColor,
                     openPosition = openPosition,
-                    lotSizeInput = lotSizeInput,
-                    onOpenTrade = onOpenTrade,
-                    onPlacePendingTrade = onPlacePendingTrade
+                    riskPercentInput = riskPercentInput,
+                    accountEquityUsd = accountEquityUsd
                 )
                 Spacer(modifier = Modifier.height(12.dp))
                 if (analysisResult.rejectionReasons.isNotEmpty()) {
@@ -1393,33 +1080,10 @@ private fun SignalCard(
                     analysisResult = analysisResult
                 )
                 Spacer(modifier = Modifier.height(12.dp))
-                analysisResult.confirmations.forEach { confirmation ->
-                    val bypassReason = confirmationBypassReason(
-                        confirmationName = confirmation.name,
-                        signalFilters = signalFilters
-                    )
-                    val bypassed = bypassReason != null
-                    val statusLabel = when {
-                        bypassed -> "BYPASS"
-                        confirmation.passed -> "PASS"
-                        else -> "WAIT"
-                    }
-                    val statusColor = when {
-                        bypassed -> MaterialTheme.colorScheme.secondary
-                        confirmation.passed -> MaterialTheme.colorScheme.primary
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                    }
-                    Text(
-                        text = if (bypassed) {
-                            "$statusLabel  ${confirmation.name}: $bypassReason. Raw read: ${confirmation.details}"
-                        } else {
-                            "$statusLabel  ${confirmation.name}: ${confirmation.details}"
-                        },
-                        color = statusColor,
-                        fontSize = 13.sp
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                }
+                ConfirmationAnalysisCard(
+                    analysisResult = analysisResult,
+                    signalFilters = signalFilters
+                )
             }
         }
     }
@@ -1468,32 +1132,6 @@ private fun ForecastResearchCard(
             Text("Expected move: ${"%.2f".format(research.expectedMovePercent)}%")
             Spacer(modifier = Modifier.height(8.dp))
             Text(research.summary, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
-}
-
-@Composable
-private fun PerformanceFeedbackCard(
-    feedback: TradePerformanceFeedback
-) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text("Trade History Feedback", fontWeight = FontWeight.SemiBold)
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                if (feedback.strictModeActive) "Recent history is under pressure" else "Recent history is stable",
-                color = if (feedback.strictModeActive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text("Sample: ${feedback.sampleSize} trades")
-            Spacer(modifier = Modifier.height(4.dp))
-            Text("Consecutive losses: ${feedback.consecutiveLosses}")
-            Spacer(modifier = Modifier.height(4.dp))
-            Text("Win rate: ${feedback.recentWinRate}%")
-            Spacer(modifier = Modifier.height(4.dp))
-            Text("Recent net P/L: ${formatCurrencySigned(feedback.recentNetPnlUsd)}")
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(feedback.summary, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -1592,17 +1230,11 @@ private fun MarketsPanel(
                     ) {
                         Text(if (symbol == selectedSymbol) "Tracking" else "Track")
                     }
-                    OutlinedButton(
-                        onClick = { onConnectSymbol(symbol) },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("Connect")
-                    }
                     Button(
                         onClick = { onAnalyzeSymbol(symbol) },
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("Analyze")
+                        Text("Analyse Market")
                     }
                 }
             }
@@ -1639,128 +1271,6 @@ private fun ProcessFlowCard(
 }
 
 @Composable
-private fun ChartCard(
-    prices: List<Double>,
-    candles: List<MarketCandle>,
-    dataQuality: DataQuality,
-    timeframe: String,
-    analysisResult: AnalysisResult
-) {
-    val chartCandles = remember(candles, prices, timeframe) {
-        if (candles.isNotEmpty()) {
-            candles.takeLast(240).map {
-                PriceCandle(
-                    epoch = it.epoch,
-                    open = it.open,
-                    high = it.high,
-                    low = it.low,
-                    close = it.close
-                )
-            }
-        } else {
-            buildCandles(prices, timeframe)
-        }
-    }
-    val overlays = remember(chartCandles) { buildChartOverlayState(chartCandles) }
-    var showFastTrend by remember(timeframe) { mutableStateOf(true) }
-    var showSlowTrend by remember(timeframe) { mutableStateOf(true) }
-    var showBiasLine by remember(timeframe) { mutableStateOf(true) }
-
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier
-                .padding(16.dp)
-                .animateContentSize()
-        ) {
-            Text("Market Chart", fontWeight = FontWeight.SemiBold)
-            Spacer(modifier = Modifier.height(8.dp))
-            if (chartCandles.size < 2) {
-                Text(
-                    "Not enough live ticks to render candles yet. Keep the feed running and analyze again.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            } else {
-                Text(
-                    if (dataQuality == DataQuality.EXCHANGE_OHLC) {
-                        "Showing ${chartCandles.size} exchange OHLC candles for $timeframe. Drag horizontally to inspect more history."
-                    } else {
-                        "Showing ${chartCandles.size} estimated candles for $timeframe. Drag horizontally to inspect more history."
-                    },
-                    color = if (dataQuality == DataQuality.EXCHANGE_OHLC) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 13.sp
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                PriceChart(
-                    candles = chartCandles,
-                    overlays = overlays,
-                    analysisResult = analysisResult,
-                    showFastTrend = showFastTrend,
-                    showSlowTrend = showSlowTrend,
-                    showBiasLine = showBiasLine,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(220.dp)
-                )
-                Spacer(modifier = Modifier.height(10.dp))
-                Text(
-                    "Tap the legend to show or hide each overlay.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 12.sp
-                )
-                Spacer(modifier = Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    TrendBadge(
-                        label = "Fast",
-                        color = MaterialTheme.colorScheme.secondary,
-                        enabled = showFastTrend,
-                        modifier = Modifier.weight(1f),
-                        onClick = { showFastTrend = !showFastTrend }
-                    )
-                    TrendBadge(
-                        label = "Slow",
-                        color = MaterialTheme.colorScheme.tertiary,
-                        enabled = showSlowTrend,
-                        modifier = Modifier.weight(1f),
-                        onClick = { showSlowTrend = !showSlowTrend }
-                    )
-                    TrendBadge(
-                        label = "Bias",
-                        color = MaterialTheme.colorScheme.primary,
-                        enabled = showBiasLine,
-                        modifier = Modifier.weight(1f),
-                        onClick = { showBiasLine = !showBiasLine }
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun TrendBadge(
-    label: String,
-    color: Color,
-    enabled: Boolean,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-    androidx.compose.material3.Surface(
-        onClick = onClick,
-        modifier = modifier,
-        shape = RoundedCornerShape(999.dp),
-        color = if (enabled) color.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-        contentColor = if (enabled) color else MaterialTheme.colorScheme.onSurfaceVariant
-    ) {
-        Text(
-            text = if (enabled) label else "$label Off",
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Medium
-        )
-    }
-}
-
-@Composable
 private fun ChartsPanel(
     selectedSymbol: TradingSymbol,
     selectedTimeframe: String,
@@ -1777,8 +1287,8 @@ private fun ChartsPanel(
     onChartDensityChange: (ChartDensity) -> Unit,
     pinchZoomScale: Float,
     onPinchZoomScaleChange: (Float) -> Unit,
-    onConnect: () -> Unit,
-    onAnalyze: () -> Unit
+    onAnalyzeMarket: () -> Unit,
+    isAnalyzingMarket: Boolean
 ) {
     val chartCandles = remember(candles, recentPrices, selectedTimeframe) {
         if (candles.isNotEmpty()) {
@@ -1796,7 +1306,7 @@ private fun ChartsPanel(
         }
     }
     val overlays = remember(chartCandles) { buildChartOverlayState(chartCandles) }
-    val effectiveCandleSpacing = (chartDensity.candleSpacing.dp * pinchZoomScale).coerceIn(8.dp, 40.dp)
+    val effectiveCandleSpacing = (chartDensity.candleSpacing.dp * pinchZoomScale).coerceIn(4.dp, 72.dp)
     val priceRange = remember(chartCandles) {
         val high = chartCandles.maxOfOrNull { it.high }
         val low = chartCandles.minOfOrNull { it.low }
@@ -1807,10 +1317,14 @@ private fun ChartsPanel(
         color = Color(0xFF000000),
         contentColor = Color.White,
         modifier = Modifier
-            .fillMaxWidth()
+            .fillMaxSize()
             .statusBarsPadding()
     ) {
-        Column(modifier = Modifier.padding(top = 12.dp, bottom = 8.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(top = 8.dp, bottom = 4.dp)
+        ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1827,16 +1341,10 @@ private fun ChartsPanel(
                     LiveStateChip(active = isLiveFeed)
                     Text(livePrice?.let(::formatDisplayPrice) ?: "-", fontSize = 13.sp, fontWeight = FontWeight.Medium)
                     ChartActionButton(
-                        icon = Icons.Outlined.SyncAlt,
-                        label = if (isLiveFeed) "Reconnect live feed" else "Connect live feed",
-                        tint = if (isLiveFeed) Color(0xFF5EEAD4) else Color.White,
-                        onClick = onConnect
-                    )
-                    ChartActionButton(
                         icon = Icons.Outlined.Refresh,
-                        label = "Refresh chart analysis",
-                        tint = Color(0xFF93C5FD),
-                        onClick = onAnalyze
+                        label = if (isAnalyzingMarket) "Analysing market" else "Analyse market",
+                        tint = Color(0xFFFFD60A),
+                        onClick = onAnalyzeMarket
                     )
                 }
             }
@@ -1870,7 +1378,7 @@ private fun ChartsPanel(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    "${chartCandles.size} candles loaded • drag left for history • pinch to zoom ${"%.1f".format(pinchZoomScale)}x",
+                "${chartCandles.size} candles • drag for older candles • pinch or use zoom ${"%.1f".format(pinchZoomScale)}x",
                     color = Color(0xFF6B7280),
                     fontSize = 11.sp
                 )
@@ -1893,12 +1401,22 @@ private fun ChartsPanel(
                         onClick = { onChartDensityChange(density) }
                     )
                 }
+                ToggleTerminalChip(
+                    label = "Zoom -",
+                    active = false,
+                    onClick = { onPinchZoomScaleChange((pinchZoomScale * 0.82f).coerceIn(0.45f, 3.5f)) }
+                )
+                ToggleTerminalChip(
+                    label = "Zoom +",
+                    active = false,
+                    onClick = { onPinchZoomScaleChange((pinchZoomScale * 1.22f).coerceIn(0.45f, 3.5f)) }
+                )
             }
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(520.dp)
-                    .padding(horizontal = 2.dp, vertical = 6.dp)
+                    .weight(1f)
+                    .padding(horizontal = 0.dp, vertical = 4.dp)
             ) {
                 if (chartCandles.size > 1) {
                     PriceChart(
@@ -1911,7 +1429,7 @@ private fun ChartsPanel(
                         followLatest = followLatest,
                         candleSpacing = effectiveCandleSpacing,
                         onPinchZoom = { zoomChange ->
-                            onPinchZoomScaleChange((pinchZoomScale * zoomChange).coerceIn(0.65f, 2.8f))
+                            onPinchZoomScaleChange((pinchZoomScale * zoomChange).coerceIn(0.45f, 3.5f))
                         },
                         modifier = Modifier.fillMaxSize()
                     )
@@ -1927,15 +1445,7 @@ private fun ChartsPanel(
                 }
             }
             ChartTimeAxis(candles = chartCandles)
-            Spacer(modifier = Modifier.height(8.dp))
-            ChartNavigatorStrip(
-                candles = chartCandles,
-                bias = analysisResult?.bias ?: TradeBias.NEUTRAL,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 10.dp)
-            )
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(6.dp))
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1958,7 +1468,6 @@ private fun ChartsPanel(
                     modifier = Modifier.weight(1f)
                 )
             }
-            Spacer(modifier = Modifier.height(8.dp))
             Text(
                 "${selectedSymbol.label} • ${dataQuality.label} • ${if (followLatest) "latest candle follows live feed" else "manual scroll locked"}",
                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
@@ -2162,6 +1671,95 @@ private fun EvidenceCard(
 }
 
 @Composable
+private fun ConfirmationAnalysisCard(
+    analysisResult: AnalysisResult,
+    signalFilters: SignalFilterSettings
+) {
+    var expanded by rememberSaveable(analysisResult.summary) { mutableStateOf(false) }
+    val validPassCount = analysisResult.confirmations.count {
+        it.passed && confirmationBypassReason(it.name, signalFilters) == null
+    }
+    val bypassCount = analysisResult.confirmations.count {
+        confirmationBypassReason(it.name, signalFilters) != null
+    }
+    val waitCount = analysisResult.confirmations.size - validPassCount - bypassCount
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Pass / Wait Analysis", fontWeight = FontWeight.SemiBold)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "$validPassCount valid pass • $waitCount wait • $bypassCount bypassed",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp
+                    )
+                }
+                OutlinedButton(onClick = { expanded = !expanded }) {
+                    Text(if (expanded) "Hide" else "More Explanation")
+                }
+            }
+            if (expanded) {
+                Spacer(modifier = Modifier.height(12.dp))
+                analysisResult.confirmations.forEachIndexed { index, confirmation ->
+                    val bypassReason = confirmationBypassReason(
+                        confirmationName = confirmation.name,
+                        signalFilters = signalFilters
+                    )
+                    val bypassed = bypassReason != null
+                    val statusLabel = when {
+                        bypassed -> "BYPASSED"
+                        confirmation.passed -> "VALID PASS"
+                        else -> "NOT VALID YET"
+                    }
+                    val statusColor = when {
+                        bypassed -> MaterialTheme.colorScheme.secondary
+                        confirmation.passed -> MaterialTheme.colorScheme.primary
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                        contentColor = MaterialTheme.colorScheme.onSurface,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(
+                                "$statusLabel • ${confirmation.name}",
+                                color = statusColor,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 13.sp
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                if (bypassed) {
+                                    "This check is not currently allowed to block the strategy because $bypassReason. Raw read: ${confirmation.details}"
+                                } else if (confirmation.passed) {
+                                    "Valid because the current market data satisfies this check: ${confirmation.details}"
+                                } else {
+                                    "Not valid yet because the current market data does not satisfy this check: ${confirmation.details}"
+                                },
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 12.sp,
+                                lineHeight = 17.sp
+                            )
+                        }
+                    }
+                    if (index != analysisResult.confirmations.lastIndex) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun RejectionReasonsCard(reasons: List<String>) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
@@ -2181,18 +1779,18 @@ private fun TradePlanCard(
     analysisResult: AnalysisResult,
     biasColor: Color,
     openPosition: TradePosition?,
-    lotSizeInput: String,
-    onOpenTrade: () -> Unit,
-    onPlacePendingTrade: () -> Unit
+    riskPercentInput: String,
+    accountEquityUsd: Double
 ) {
     val tradeSetup = analysisResult.tradeSetup
-    val lotSize = lotSizeInput.toDoubleOrNull() ?: 0.10
+    val riskPercent = riskPercentInput.toDoubleOrNull() ?: 1.0
     val sizingQuote = tradeSetup.entry?.let { entry ->
-        PositionSizingEngine.quote(
+        PositionSizingEngine.quoteRiskBased(
             symbol = symbol,
             entryPrice = entry,
             stopLoss = tradeSetup.stopLoss,
-            requestedLot = lotSize
+            accountEquityUsd = accountEquityUsd,
+            riskPercent = riskPercent
         )
     }
     val hasOpenPosition = openPosition != null
@@ -2226,26 +1824,26 @@ private fun TradePlanCard(
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                "This opens a demo trade only. It does not send a live broker order.",
+                "Sizing is informational only. It uses account equity, stop distance, contract value, and broker lot rules.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 12.sp
             )
             Spacer(modifier = Modifier.height(8.dp))
             sizingQuote?.let { quote ->
                 Text(
-                    "Planned size: ${formatLot(quote.normalizedLotSize)} lots • Notional: ${formatCurrency(quote.notionalUsd)}",
+                    "Risk model: ${"%.2f".format(riskPercent)}% of ${formatCurrency(accountEquityUsd)} -> estimated risk ${quote.estimatedRiskUsd?.let(::formatCurrency) ?: "-"}",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 12.sp
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    "Used margin: ${formatCurrency(quote.usedMarginUsd)} • Spread cost: ${formatCurrency(quote.estimatedSpreadCostUsd)}",
+                    "Suggested size: ${formatLot(quote.normalizedLotSize)} lots • Stop distance: ${quote.stopDistancePercent?.let(::formatPercent) ?: "-"} • Notional: ${formatCurrency(quote.notionalUsd)}",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 12.sp
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    "Lot rules: min ${formatLot(symbol.spec.minLot)} • step ${formatLot(symbol.spec.lotStep)} • max ${formatLot(symbol.spec.maxLot)}",
+                    "Used margin: ${formatCurrency(quote.usedMarginUsd)} • Spread cost: ${formatCurrency(quote.estimatedSpreadCostUsd)} • Lot rules: min ${formatLot(symbol.spec.minLot)}, step ${formatLot(symbol.spec.lotStep)}",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 12.sp
                 )
@@ -2253,42 +1851,9 @@ private fun TradePlanCard(
             if (hasOpenPosition) {
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    "Another trade is already open here. You can still add a new entry.",
+                    "A saved position record exists for this symbol. It is shown as context only; signal generation no longer creates orders.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 12.sp
-                )
-            }
-            Spacer(modifier = Modifier.height(12.dp))
-            Button(
-                onClick = onOpenTrade,
-                enabled = analysisResult.bias != TradeBias.NEUTRAL,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(
-                    when {
-                        analysisResult.bias == TradeBias.BEARISH && !tradeSetup.shouldTrade && hasOpenPosition -> "Add Demo Short Anyway"
-                        analysisResult.bias == TradeBias.BULLISH && !tradeSetup.shouldTrade && hasOpenPosition -> "Add Demo Long Anyway"
-                        analysisResult.bias == TradeBias.BEARISH && !tradeSetup.shouldTrade -> "Start Demo Short Anyway"
-                        analysisResult.bias == TradeBias.BULLISH && !tradeSetup.shouldTrade -> "Start Demo Long Anyway"
-                        analysisResult.bias == TradeBias.BEARISH && hasOpenPosition -> "Add Demo Short"
-                        analysisResult.bias == TradeBias.BULLISH && hasOpenPosition -> "Add Demo Long"
-                        analysisResult.bias == TradeBias.BEARISH -> "Start Demo Short"
-                        else -> "Start Demo Long"
-                    }
-                )
-            }
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedButton(
-                onClick = onPlacePendingTrade,
-                enabled = analysisResult.bias != TradeBias.NEUTRAL && tradeSetup.entry != null,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(
-                    when {
-                        analysisResult.bias == TradeBias.BEARISH -> "Place Pending Sell"
-                        analysisResult.bias == TradeBias.BULLISH -> "Place Pending Buy"
-                        else -> "Place Pending Order"
-                    }
                 )
             }
         }
@@ -2445,7 +2010,8 @@ private fun PriceChart(
                     .width(chartWidth)
                     .fillMaxHeight()
             ) {
-                val candleWidth = with(density) { candleSpacing.toPx() }
+                val requestedCandleWidth = with(density) { candleSpacing.toPx() }
+                val candleWidth = maxOf(requestedCandleWidth, size.width / candles.size.coerceAtLeast(1))
                 val bodyWidth = candleWidth * 0.58f
                 val topInset = size.height * 0.16f
                 val bottomInset = size.height * 0.10f
@@ -2678,7 +2244,7 @@ private fun AlertsPanel(
                 modifier = Modifier.fillMaxWidth(),
                 enabled = alertHistory.isNotEmpty()
             ) {
-                Text("Clear History")
+                Text("Clear Alerts")
             }
         }
     }
@@ -2687,7 +2253,7 @@ private fun AlertsPanel(
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
-                    "No stored alerts yet. Run an analysis or pin the current signal to build a history.",
+                    "No stored alerts yet. Run an analysis or pin the current signal to keep recent signal notes.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -3074,7 +2640,7 @@ private fun ConfirmCloseTradeDialog(
                 )
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    "This will move the trade into history using the current available price.",
+                    "This closes the saved position record using the current available price.",
                     color = Color(0xFF9CA3AF),
                     fontSize = 12.sp
                 )
@@ -3093,550 +2659,6 @@ private fun ConfirmCloseTradeDialog(
             }
         }
     }
-}
-
-@Composable
-private fun HistoryPanel(
-    closedTrades: List<ClosedTradeRecord>,
-    demoBalance: Double
-) {
-    var selectedPeriod by remember { mutableStateOf(HistoryPeriodOption.LAST_WEEK) }
-    var selectedTab by remember { mutableStateOf(HistoryViewTab.POSITIONS) }
-    var expandedPeriodMenu by remember { mutableStateOf(false) }
-    var expandedTradeId by remember { mutableStateOf<String?>(null) }
-    val filteredTrades = remember(closedTrades, selectedPeriod) {
-        filterTradesByPeriod(closedTrades, selectedPeriod)
-    }
-    val closedPnl = filteredTrades.sumOf { it.pnlUsd }
-
-    Surface(
-        color = Color(0xFF000000),
-        contentColor = Color(0xFFF3F4F6),
-        modifier = Modifier
-            .fillMaxWidth()
-            .statusBarsPadding()
-    ) {
-        Column(modifier = Modifier.padding(top = 12.dp)) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 10.dp, vertical = 2.dp),
-                horizontalArrangement = Arrangement.End
-            ) {
-                Box {
-                    OutlinedButton(
-                        onClick = { expandedPeriodMenu = true },
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
-                    ) {
-                        Text(selectedPeriod.label, fontSize = 13.sp)
-                    }
-                    DropdownMenu(
-                        expanded = expandedPeriodMenu,
-                        onDismissRequest = { expandedPeriodMenu = false }
-                    ) {
-                        HistoryPeriodOption.entries.forEach { option ->
-                            DropdownMenuItem(
-                                text = { Text(option.label) },
-                                onClick = {
-                                    selectedPeriod = option
-                                    expandedPeriodMenu = false
-                                }
-                            )
-                        }
-                    }
-                }
-            }
-            HistoryTabRow(
-                selectedTab = selectedTab,
-                onTabSelected = { selectedTab = it }
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            HistoryMetricLine(
-                label = "Profit",
-                value = formatCurrencySigned(closedPnl),
-                accent = if (closedPnl >= 0.0) Color(0xFF3B82F6) else Color(0xFFEF4444)
-            )
-            HistoryMetricLine("Deposit", formatCurrency(0.0))
-            HistoryMetricLine("Swap", formatCurrency(0.0))
-            HistoryMetricLine("Commission", formatCurrency(0.0))
-            HistoryMetricLine("Balance", formatCurrency(demoBalance))
-            Spacer(modifier = Modifier.height(8.dp))
-            when (selectedTab) {
-                HistoryViewTab.DEALS -> {
-                    filteredTrades.take(15).forEachIndexed { index, trade ->
-                        HistoryTradeRow(
-                            trade = trade,
-                            expanded = expandedTradeId == trade.id,
-                            onClick = {
-                                expandedTradeId = if (expandedTradeId == trade.id) null else trade.id
-                            }
-                        )
-                        if (index != minOf(filteredTrades.size, 15) - 1) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(1.dp)
-                                    .background(Color(0xFF374151))
-                            )
-                        }
-                    }
-                }
-                HistoryViewTab.POSITIONS,
-                HistoryViewTab.ORDERS -> {
-                    filteredTrades.take(15).forEachIndexed { index, trade ->
-                        HistoryTradeRow(
-                            trade = trade,
-                            expanded = expandedTradeId == trade.id,
-                            onClick = {
-                                expandedTradeId = if (expandedTradeId == trade.id) null else trade.id
-                            }
-                        )
-                        if (index != minOf(filteredTrades.size, 15) - 1) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(1.dp)
-                                    .background(Color(0xFF374151))
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-private enum class HistoryViewTab(val label: String) {
-    POSITIONS("POSITIONS"),
-    ORDERS("ORDERS"),
-    DEALS("DEALS")
-}
-
-private enum class HistoryPeriodOption(val label: String, val daysBack: Long?) {
-    TODAY("Today", 0),
-    LAST_WEEK("Last week", 7),
-    LAST_MONTH("Last month", 31),
-    LAST_3_MONTHS("Last 3 months", 92),
-    ALL_TIME("All time", null)
-}
-
-@Composable
-private fun HistoryTabRow(
-    selectedTab: HistoryViewTab,
-    onTabSelected: (HistoryViewTab) -> Unit
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceEvenly
-    ) {
-        HistoryViewTab.entries.forEach { tab ->
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Surface(
-                    onClick = { onTabSelected(tab) },
-                    color = Color.Transparent,
-                    contentColor = if (selectedTab == tab) Color.White else Color(0xFF6B7280)
-                ) {
-                    Text(
-                        tab.label,
-                        modifier = Modifier.padding(vertical = 6.dp),
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
-                Box(
-                    modifier = Modifier
-                        .width(72.dp)
-                        .height(3.dp)
-                        .background(if (selectedTab == tab) Color(0xFF3B82F6) else Color.Transparent)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun HistoryMetricLine(
-    label: String,
-    value: String,
-    accent: Color = Color.White
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(label, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-        Spacer(modifier = Modifier.weight(1f))
-        Text(value, color = accent, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-    }
-}
-
-@Composable
-private fun HistoryTradeRow(
-    trade: ClosedTradeRecord,
-    expanded: Boolean,
-    onClick: () -> Unit
-) {
-    Surface(
-        onClick = onClick,
-        color = Color(0xFF000000),
-        contentColor = Color(0xFFF9FAFB),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(
-            modifier = Modifier
-                .padding(horizontal = 12.dp, vertical = 8.dp)
-                .animateContentSize()
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Top
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Row {
-                        Text(
-                            "${trade.symbolCode}, ",
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp
-                        )
-                        Text(
-                            "${trade.side.name.lowercase()} ${formatLot(trade.lotSize)}",
-                            color = if (trade.side == PositionSide.LONG) Color(0xFF3B82F6) else Color(0xFFEF4444),
-                            fontWeight = FontWeight.Medium,
-                            fontSize = 15.sp
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        "${formatGroupedPrice(trade.entryPrice)} -> ${formatGroupedPrice(trade.exitPrice)}",
-                        color = Color(0xFF9CA3AF),
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-                Column(horizontalAlignment = Alignment.End) {
-                    Text(
-                        formatHistoryTimestamp(trade.closedAtEpochMillis),
-                        color = Color(0xFF9CA3AF),
-                        fontSize = 10.sp
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        formatCurrencySigned(trade.pnlUsd),
-                        color = if (trade.pnlUsd >= 0.0) Color(0xFF3B82F6) else Color(0xFFEF4444),
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp
-                    )
-                    Spacer(modifier = Modifier.height(3.dp))
-                    Text(
-                        if (expanded) "Collapse" else "Details",
-                        color = Color(0xFF6B7280),
-                        fontSize = 9.sp
-                    )
-                }
-            }
-            if (expanded) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    HistoryDetailColumn(
-                        items = listOf(
-                            "Ticket" to "#${trade.id.takeLast(10)}",
-                            "Opened" to formatHistoryTimestamp(trade.openedAtEpochMillis),
-                            "S/L" to (trade.stopLoss?.let(::formatDisplayPrice) ?: "-"),
-                            "T/P" to (trade.takeProfit?.let(::formatDisplayPrice) ?: "-")
-                        ),
-                        modifier = Modifier.weight(1f)
-                    )
-                    HistoryDetailColumn(
-                        items = listOf(
-                            "Closed" to formatHistoryTimestamp(trade.closedAtEpochMillis),
-                            "Outcome" to trade.outcomeLabel,
-                            "P/L %" to formatPercentSigned(trade.pnlPercent),
-                            "Stake" to formatCurrency(trade.stakeUsd)
-                        ),
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-                if (trade.rationale.isNotBlank()) {
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        trade.rationale,
-                        color = Color(0xFF9CA3AF),
-                        fontSize = 10.sp,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun HistoryDetailColumn(
-    items: List<Pair<String, String>>,
-    modifier: Modifier = Modifier
-) {
-    Column(modifier = modifier) {
-        items.forEachIndexed { index, (label, value) ->
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Top
-            ) {
-                Text(label, color = Color(0xFF6B7280), fontSize = 10.sp)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    value,
-                    color = Color.White,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            if (index != items.lastIndex) {
-                Spacer(modifier = Modifier.height(3.dp))
-            }
-        }
-    }
-}
-
-private fun runSignalReplay(
-    symbol: TradingSymbol,
-    timeframe: String,
-    mode: ConfirmationMode,
-    signalFilters: SignalFilterSettings,
-    candles: List<MarketCandle>,
-    candleStack: Map<String, List<MarketCandle>>
-): SignalReplayResult? {
-    val baseCandles = candleStack[timeframe]
-        .orEmpty()
-        .ifEmpty { candles }
-        .sortedBy { it.epoch }
-    if (baseCandles.size < 40) return null
-
-    val timeframePlan = AnalysisSupport.buildTimeframePlan(timeframe)
-    val stackLabel = "${timeframePlan.macro}/${timeframePlan.structure}/${timeframePlan.setup}/${timeframePlan.trigger}"
-    val lookaheadCandles = replayLookaheadCandles(timeframe)
-    val warmupCandles = 40
-    var scannedWindows = 0
-    var eligibleSignals = 0
-    var watchlistSignals = 0
-    var wins = 0
-    var confidenceSum = 0
-    var moveSum = 0.0
-    val recentSignals = mutableListOf<SignalReplaySample>()
-
-    for (index in warmupCandles until (baseCandles.size - lookaheadCandles)) {
-        val visibleCandles = baseCandles.take(index + 1)
-        val currentCandle = visibleCandles.last()
-        val replayStack = buildReplayCandleStack(
-            candleStack = candleStack,
-            cutoffEpoch = currentCandle.epoch,
-            fallbackTimeframe = timeframe,
-            fallbackCandles = visibleCandles
-        )
-        val replayResult = AnalysisStub.analyze(
-            symbol = symbol,
-            timeframe = timeframe,
-            mode = mode,
-            candles = visibleCandles,
-            candleStack = replayStack,
-            recentPrices = visibleCandles.takeLast(240).map { it.close },
-            signalFilters = signalFilters,
-            closedTrades = emptyList()
-        )
-        scannedWindows += 1
-        if (replayResult.decision == TradeDecision.WATCHLIST && replayResult.bias != TradeBias.NEUTRAL) {
-            watchlistSignals += 1
-        }
-        if (!replayResult.approved || replayResult.bias == TradeBias.NEUTRAL) {
-            continue
-        }
-
-        eligibleSignals += 1
-        val futureCandles = baseCandles.subList(index + 1, minOf(index + 1 + lookaheadCandles, baseCandles.size))
-        val outcome = simulateReplayOutcome(
-            symbol = symbol,
-            analysisResult = replayResult,
-            entryPrice = currentCandle.close,
-            futureCandles = futureCandles
-        )
-        if (outcome.win) wins += 1
-        confidenceSum += replayResult.confidence
-        moveSum += outcome.netMovePercent
-        recentSignals += SignalReplaySample(
-            signalAtEpochMillis = currentCandle.epoch * 1_000L,
-            bias = replayResult.bias,
-            confidence = replayResult.confidence,
-            netMovePercent = outcome.netMovePercent,
-            win = outcome.win,
-            resolution = outcome.resolution
-        )
-    }
-
-    val averageConfidence = if (eligibleSignals == 0) 0 else confidenceSum / eligibleSignals
-    val averageNetMovePercent = if (eligibleSignals == 0) 0.0 else moveSum / eligibleSignals
-    val winRatePercent = if (eligibleSignals == 0) 0 else ((wins.toDouble() / eligibleSignals) * 100.0).toInt()
-    val coveragePercent = if (scannedWindows == 0) 0 else ((eligibleSignals.toDouble() / scannedWindows) * 100.0).toInt()
-    val note = when {
-        eligibleSignals == 0 && watchlistSignals > 0 ->
-            "The engine saw $watchlistSignals watchlist setups but no fully eligible entries. Current filters are still strict for this feed."
-        eligibleSignals == 0 ->
-            "No eligible entries were found in the loaded replay window. Either the sample is too small or the current guardrails are blocking everything."
-        eligibleSignals < 5 ->
-            "Low-sample replay. Use this as a quick read only, not a final verdict."
-        else ->
-            "Replay uses candle-close entries, spread-adjusted outcome scoring, and the current guardrails. Closed-trade history feedback is excluded to avoid leaking prior outcomes into the test."
-    }
-
-    return SignalReplayResult(
-        symbolCode = symbol.code,
-        stackLabel = stackLabel,
-        modeLabel = mode.label,
-        lookaheadCandles = lookaheadCandles,
-        scannedWindows = scannedWindows,
-        eligibleSignals = eligibleSignals,
-        watchlistSignals = watchlistSignals,
-        winRatePercent = winRatePercent,
-        coveragePercent = coveragePercent,
-        averageConfidence = averageConfidence,
-        averageNetMovePercent = averageNetMovePercent,
-        note = note,
-        recentSignals = recentSignals.takeLast(6).reversed()
-    )
-}
-
-private fun buildReplayCandleStack(
-    candleStack: Map<String, List<MarketCandle>>,
-    cutoffEpoch: Long,
-    fallbackTimeframe: String,
-    fallbackCandles: List<MarketCandle>
-): Map<String, List<MarketCandle>> {
-    val truncated = candleStack.mapValues { (_, candles) ->
-        candles
-            .filter { it.epoch <= cutoffEpoch }
-            .takeLast(240)
-    }.filterValues { it.isNotEmpty() }.toMutableMap()
-    if (truncated[fallbackTimeframe].isNullOrEmpty()) {
-        truncated[fallbackTimeframe] = fallbackCandles.takeLast(240)
-    }
-    return truncated
-}
-
-private fun replayLookaheadCandles(timeframe: String): Int {
-    return when (timeframe) {
-        "1m" -> 6
-        "5m" -> 5
-        "15m" -> 4
-        "30m" -> 3
-        "1h" -> 3
-        else -> 2
-    }
-}
-
-private fun simulateReplayOutcome(
-    symbol: TradingSymbol,
-    analysisResult: AnalysisResult,
-    entryPrice: Double,
-    futureCandles: List<MarketCandle>
-): SignalReplayOutcome {
-    if (futureCandles.isEmpty()) {
-        return SignalReplayOutcome(
-            win = false,
-            netMovePercent = 0.0,
-            resolution = "no forward candles"
-        )
-    }
-
-    val spreadCost = symbol.spec.typicalSpread
-    val stopLoss = analysisResult.tradeSetup.stopLoss
-    val takeProfit = analysisResult.tradeSetup.takeProfit
-
-    futureCandles.forEach { candle ->
-        when (analysisResult.bias) {
-            TradeBias.BULLISH -> {
-                val stopHit = stopLoss != null && candle.low <= stopLoss
-                val targetHit = takeProfit != null && candle.high >= takeProfit
-                when {
-                    stopHit && targetHit -> {
-                        val netMove = ((stopLoss ?: entryPrice) - entryPrice) - spreadCost
-                        return SignalReplayOutcome(
-                            win = false,
-                            netMovePercent = (netMove / entryPrice.coerceAtLeast(0.00001)) * 100.0,
-                            resolution = "same-candle clash -> stop"
-                        )
-                    }
-                    stopHit -> {
-                        val netMove = ((stopLoss ?: entryPrice) - entryPrice) - spreadCost
-                        return SignalReplayOutcome(
-                            win = false,
-                            netMovePercent = (netMove / entryPrice.coerceAtLeast(0.00001)) * 100.0,
-                            resolution = "stop hit"
-                        )
-                    }
-                    targetHit -> {
-                        val netMove = ((takeProfit ?: entryPrice) - entryPrice) - spreadCost
-                        return SignalReplayOutcome(
-                            win = true,
-                            netMovePercent = (netMove / entryPrice.coerceAtLeast(0.00001)) * 100.0,
-                            resolution = "target hit"
-                        )
-                    }
-                }
-            }
-            TradeBias.BEARISH -> {
-                val stopHit = stopLoss != null && candle.high >= stopLoss
-                val targetHit = takeProfit != null && candle.low <= takeProfit
-                when {
-                    stopHit && targetHit -> {
-                        val netMove = (entryPrice - (stopLoss ?: entryPrice)) - spreadCost
-                        return SignalReplayOutcome(
-                            win = false,
-                            netMovePercent = (netMove / entryPrice.coerceAtLeast(0.00001)) * 100.0,
-                            resolution = "same-candle clash -> stop"
-                        )
-                    }
-                    stopHit -> {
-                        val netMove = (entryPrice - (stopLoss ?: entryPrice)) - spreadCost
-                        return SignalReplayOutcome(
-                            win = false,
-                            netMovePercent = (netMove / entryPrice.coerceAtLeast(0.00001)) * 100.0,
-                            resolution = "stop hit"
-                        )
-                    }
-                    targetHit -> {
-                        val netMove = (entryPrice - (takeProfit ?: entryPrice)) - spreadCost
-                        return SignalReplayOutcome(
-                            win = true,
-                            netMovePercent = (netMove / entryPrice.coerceAtLeast(0.00001)) * 100.0,
-                            resolution = "target hit"
-                        )
-                    }
-                }
-            }
-            TradeBias.NEUTRAL -> Unit
-        }
-    }
-
-    val terminalPrice = futureCandles.last().close
-    val netMove = when (analysisResult.bias) {
-        TradeBias.BULLISH -> (terminalPrice - entryPrice) - spreadCost
-        TradeBias.BEARISH -> (entryPrice - terminalPrice) - spreadCost
-        TradeBias.NEUTRAL -> 0.0
-    }
-    return SignalReplayOutcome(
-        win = netMove > 0.0,
-        netMovePercent = (netMove / entryPrice.coerceAtLeast(0.00001)) * 100.0,
-        resolution = "horizon close"
-    )
 }
 
 private fun formatDisplayPrice(value: Double): String = "%.5f".format(value)
@@ -3718,36 +2740,6 @@ private fun formatTimestamp(epochMillis: Long): String {
         .format(Instant.ofEpochMilli(epochMillis))
 }
 
-private fun formatHistoryTimestamp(epochMillis: Long): String {
-    return DateTimeFormatter.ofPattern("yyyy.MM.dd HH:mm:ss")
-        .withZone(ZoneId.systemDefault())
-        .format(Instant.ofEpochMilli(epochMillis))
-}
-
-private fun filterTradesByPeriod(
-    trades: List<ClosedTradeRecord>,
-    period: HistoryPeriodOption
-): List<ClosedTradeRecord> {
-    val cutoff = period.daysBack?.let { days ->
-        val startDate = if (days == 0L) {
-            LocalDate.now()
-        } else {
-            LocalDate.now().minus(days, ChronoUnit.DAYS)
-        }
-        startDate.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
-    }
-    return trades
-        .filter { trade -> cutoff == null || trade.closedAtEpochMillis >= cutoff }
-        .sortedByDescending { it.closedAtEpochMillis }
-}
-
-private fun formatGroupedPrice(value: Double): String {
-    val rounded = "%.2f".format(value)
-    val parts = rounded.split(".")
-    val groupedWhole = parts[0].reversed().chunked(3).joinToString(" ").reversed()
-    return "$groupedWhole.${parts.getOrElse(1) { "00" }}"
-}
-
 private fun currentTimeLabel(): String {
     return DateTimeFormatter.ofPattern("HH:mm:ss")
         .withZone(ZoneId.systemDefault())
@@ -3767,6 +2759,17 @@ private fun SettingsPanel(
     onModeChange: (ConfirmationMode) -> Unit,
     signalFilters: SignalFilterSettings,
     onSignalFiltersChange: (SignalFilterSettings) -> Unit,
+    aiProvider: AiProvider,
+    onAiProviderChange: (AiProvider) -> Unit,
+    aiProviderConfig: AiProviderConfig,
+    onOpenAiApiKeyChange: (String) -> Unit,
+    onOpenAiModelChange: (String) -> Unit,
+    onLocalAiBaseUrlChange: (String) -> Unit,
+    onLocalAiModelChange: (String) -> Unit,
+    onOllamaBaseUrlChange: (String) -> Unit,
+    onOllamaModelChange: (String) -> Unit,
+    themeMode: AppThemeMode,
+    onThemeModeChange: (AppThemeMode) -> Unit,
     autoAnalyzeLiveFeed: Boolean,
     onAutoAnalyzeChange: (Boolean) -> Unit,
     keepAlertHistory: Boolean,
@@ -3819,6 +2822,103 @@ private fun SettingsPanel(
                     Spacer(modifier = Modifier.height(8.dp))
                 }
             }
+            Spacer(modifier = Modifier.height(16.dp))
+            Text("Display", fontWeight = FontWeight.Medium)
+            Spacer(modifier = Modifier.height(8.dp))
+            DropdownField(
+                label = "Theme",
+                value = themeMode.label,
+                options = AppThemeMode.values().map { it.label },
+                onSelect = { label ->
+                    onThemeModeChange(AppThemeMode.values().first { it.label == label })
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Text("AI Provider", fontWeight = FontWeight.Medium)
+            Spacer(modifier = Modifier.height(8.dp))
+            DropdownField(
+                label = "Provider",
+                value = aiProvider.label,
+                options = AiProvider.values().map { it.label },
+                onSelect = { label ->
+                    onAiProviderChange(AiProvider.values().first { it.label == label })
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                "Free local options: Ollama, LocalAI, or an OpenAI-compatible local server such as LM Studio. Android emulator uses 10.0.2.2 to reach your computer. Mock remains the offline fallback.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = if (compactLayout) 12.sp else 13.sp,
+                lineHeight = if (compactLayout) 16.sp else 18.sp
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+            OutlinedTextField(
+                value = aiProviderConfig.localAiBaseUrl,
+                onValueChange = onLocalAiBaseUrlChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("LocalAI Base URL") },
+                singleLine = true
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(
+                value = aiProviderConfig.localAiModel,
+                onValueChange = onLocalAiModelChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("LocalAI Model") },
+                singleLine = true
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(
+                value = aiProviderConfig.ollamaBaseUrl,
+                onValueChange = onOllamaBaseUrlChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Ollama Base URL") },
+                singleLine = true
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(
+                value = aiProviderConfig.ollamaModel,
+                onValueChange = onOllamaModelChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Ollama Model") },
+                singleLine = true
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(
+                value = aiProviderConfig.openAiApiKey.orEmpty(),
+                onValueChange = onOpenAiApiKeyChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("OpenAI API Key") },
+                supportingText = { Text("Optional. OpenAI is not free, but useful as a fallback provider.") },
+                singleLine = true
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(
+                value = aiProviderConfig.openAiModel,
+                onValueChange = onOpenAiModelChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("OpenAI Model") },
+                singleLine = true
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Text("Strategy", fontWeight = FontWeight.Medium)
+            Spacer(modifier = Modifier.height(8.dp))
+            DropdownField(
+                label = "Signal Strategy",
+                value = "Multi-factor confluence",
+                options = listOf("Multi-factor confluence"),
+                onSelect = {},
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                "Strategy presets should be added as tested rule bundles, not copied blindly. Good candidates later: trend pullback, breakout retest, mean reversion, and volatility compression breakout.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = if (compactLayout) 12.sp else 13.sp,
+                lineHeight = if (compactLayout) 16.sp else 18.sp
+            )
             Spacer(modifier = Modifier.height(16.dp))
             Text("Signal Gate Switches", fontWeight = FontWeight.Medium)
             Spacer(modifier = Modifier.height(6.dp))
@@ -3910,7 +3010,7 @@ private fun SettingsPanel(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Keep alert history", fontWeight = FontWeight.Medium)
+                    Text("Keep signal alerts", fontWeight = FontWeight.Medium)
                     Text(
                         "Store non-neutral signals so you can review what the engine approved.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

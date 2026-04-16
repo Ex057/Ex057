@@ -57,4 +57,40 @@ object PositionSizingEngine {
             estimatedRiskUsd = estimatedRiskUsd
         )
     }
+
+    fun quoteRiskBased(
+        symbol: TradingSymbol,
+        entryPrice: Double,
+        stopLoss: Double?,
+        accountEquityUsd: Double,
+        riskPercent: Double,
+        fallbackStopDistance: Double = entryPrice * 0.005
+    ): PositionSizingQuote {
+        val spec = symbol.spec
+        val riskUsd = (accountEquityUsd * (riskPercent.coerceIn(0.01, 10.0) / 100.0)).coerceAtLeast(0.0)
+        val stopDistance = stopLoss
+            ?.let { abs(entryPrice - it) }
+            ?.takeIf { it > 0.0 }
+            ?: fallbackStopDistance.coerceAtLeast(spec.tickSize)
+        val riskPerLot = (stopDistance * spec.contractSize).coerceAtLeast(0.00001)
+        val requestedLot = riskUsd / riskPerLot
+        val normalizedLot = normalizeLot(symbol, requestedLot)
+        val notionalUsd = (normalizedLot * spec.contractSize * entryPrice).coerceAtLeast(0.0)
+        val usedMarginUsd = if (spec.effectiveLeverage <= 0.0) {
+            notionalUsd
+        } else {
+            notionalUsd / spec.effectiveLeverage
+        }
+        val estimatedSpreadCostUsd = (normalizedLot * spec.contractSize * spec.typicalSpread).coerceAtLeast(0.0)
+        val estimatedRiskUsd = normalizedLot * riskPerLot
+
+        return PositionSizingQuote(
+            normalizedLotSize = normalizedLot,
+            notionalUsd = notionalUsd,
+            usedMarginUsd = usedMarginUsd,
+            estimatedSpreadCostUsd = estimatedSpreadCostUsd,
+            stopDistancePercent = (stopDistance / entryPrice.coerceAtLeast(0.00001)) * 100.0,
+            estimatedRiskUsd = estimatedRiskUsd
+        )
+    }
 }

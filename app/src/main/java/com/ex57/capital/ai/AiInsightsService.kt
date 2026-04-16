@@ -33,14 +33,27 @@ class AiInsightsService(
             }
         }
 
-        val response = withTimeout(config.timeoutMillis) {
-            when (config.provider) {
-                AiProvider.MOCK -> MockAiInsightsService().request(prompt, request, config)
-                AiProvider.OPENAI -> OpenAiInsightsService(httpClient).request(prompt, request, config)
-                AiProvider.OLLAMA -> OllamaAiInsightsService(httpClient).request(prompt, request, config)
+        val providerResponse = runCatching {
+            withTimeout(config.timeoutMillis) {
+                when (config.provider) {
+                    AiProvider.MOCK -> MockAiInsightsService().request(prompt, request, config)
+                    AiProvider.OPENAI -> OpenAiInsightsService(httpClient).request(prompt, request, config)
+                    AiProvider.OLLAMA -> OllamaAiInsightsService(httpClient).request(prompt, request, config)
+                    AiProvider.LOCALAI -> LocalAiInsightsService(httpClient).request(prompt, request, config)
+                }
             }
-        }.copy(
-            provider = config.provider,
+        }.getOrElse { throwable ->
+            if (config.provider == AiProvider.LOCALAI) {
+                MockAiInsightsService().request(prompt, request, config).copy(
+                    caution = "LocalAI was unavailable (${throwable.message ?: "request failed"}). Showing mock fallback context only."
+                )
+            } else {
+                throw throwable
+            }
+        }
+
+        val response = providerResponse.copy(
+            provider = if (config.provider == AiProvider.LOCALAI && providerResponse.provider == AiProvider.MOCK) AiProvider.MOCK else config.provider,
             action = request.action,
             cached = false,
             requestHash = prompt.requestHash,
@@ -234,13 +247,55 @@ class OllamaAiInsightsService(
     }
 }
 
+class LocalAiInsightsService(
+    private val httpClient: OkHttpClient
+) : AiProviderService {
+    override suspend fun request(
+        prompt: AiComposedPrompt,
+        request: AiInsightRequest,
+        config: AiProviderConfig
+    ): AiInsightResponse = withContext(Dispatchers.IO) {
+        val body = JSONObject()
+            .put("model", config.localAiModel)
+            .put("messages", JSONArray()
+                .put(JSONObject().put("role", "system").put("content", prompt.systemPrompt))
+                .put(JSONObject().put("role", "user").put("content", prompt.userPrompt))
+            )
+            .put("temperature", 0.2)
+            .put("max_tokens", 360)
+
+        val httpRequest = Request.Builder()
+            .url("${config.localAiBaseUrl.trimEnd('/')}/v1/chat/completions")
+            .header("Content-Type", "application/json")
+            .post(body.toString().toRequestBody("application/json".toMediaType()))
+            .build()
+
+        httpClient.newCall(httpRequest).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw IllegalStateException("LocalAI request failed with HTTP ${response.code}")
+            }
+            val raw = response.body?.string().orEmpty()
+            val json = JSONObject(raw)
+            val choices = json.optJSONArray("choices")
+            val text = choices
+                ?.optJSONObject(0)
+                ?.optJSONObject("message")
+                ?.optString("content")
+                .orEmpty()
+                .ifBlank { raw }
+            val parsed = parseStructuredPayload(text, request.action)
+            parsed.toResponse(AiProvider.LOCALAI, request.action, prompt.requestHash)
+        }
+    }
+}
+
 class AiProviderConfigStore(context: Context) {
     private val prefs = context.getSharedPreferences("ai_insights_config", Context.MODE_PRIVATE)
 
     fun load(): AiProviderConfig {
         val provider = prefs.getString("provider", null)
             ?.let { runCatching { AiProvider.valueOf(it) }.getOrNull() }
-            ?: AiProvider.MOCK
+            ?: AiProvider.LOCALAI
 
         return AiProviderConfig(
             provider = provider,
@@ -249,8 +304,38 @@ class AiProviderConfigStore(context: Context) {
             openAiBaseUrl = prefs.getString("openai_base_url", null).orEmpty().ifBlank { "https://api.openai.com" },
             ollamaBaseUrl = prefs.getString("ollama_base_url", null).orEmpty().ifBlank { "http://10.0.2.2:11434" },
             ollamaModel = prefs.getString("ollama_model", null).orEmpty().ifBlank { "llama3.1:8b" },
+            localAiBaseUrl = prefs.getString("localai_base_url", null).orEmpty().ifBlank { "http://10.0.2.2:8080" },
+            localAiModel = prefs.getString("localai_model", null).orEmpty().ifBlank { "local-model" },
             timeoutMillis = prefs.getLong("timeout_millis", 12_000L).coerceIn(4_000L, 30_000L)
         )
+    }
+
+    fun saveProvider(provider: AiProvider) {
+        prefs.edit().putString("provider", provider.name).apply()
+    }
+
+    fun saveOpenAiApiKey(apiKey: String) {
+        prefs.edit().putString("openai_api_key", apiKey.trim()).apply()
+    }
+
+    fun saveOpenAiModel(model: String) {
+        prefs.edit().putString("openai_model", model.trim()).apply()
+    }
+
+    fun saveLocalAiBaseUrl(baseUrl: String) {
+        prefs.edit().putString("localai_base_url", baseUrl.trim()).apply()
+    }
+
+    fun saveLocalAiModel(model: String) {
+        prefs.edit().putString("localai_model", model.trim()).apply()
+    }
+
+    fun saveOllamaBaseUrl(baseUrl: String) {
+        prefs.edit().putString("ollama_base_url", baseUrl.trim()).apply()
+    }
+
+    fun saveOllamaModel(model: String) {
+        prefs.edit().putString("ollama_model", model.trim()).apply()
     }
 }
 

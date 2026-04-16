@@ -58,6 +58,19 @@ internal object FeatureExtractor {
         }
         val bullishBreakoutScore = if (breakoutUp) 1.0 else if (last >= (priorWindow.maxOrNull() ?: last) - (averageStep * 0.35)) 0.5 else 0.0
         val bearishBreakoutScore = if (breakoutDown) 1.0 else if (last <= (priorWindow.minOrNull() ?: last) + (averageStep * 0.35)) 0.5 else 0.0
+        val rsi = calculateRsi(prices, period = 14)
+        val macdHistogram = calculateMacdHistogram(prices)
+        val bollingerPosition = calculateBollingerPosition(prices)
+        val bullishIndicatorScore = listOf(
+            AnalysisSupport.softScore(55.0 - rsi, 10.0, 0.0),
+            AnalysisSupport.softScore(macdHistogram, averageStep * 0.9, averageStep * 0.15),
+            AnalysisSupport.rangedScore(bollingerPosition, -0.15, 0.75, -0.55, 1.05)
+        ).average().coerceIn(0.0, 1.0)
+        val bearishIndicatorScore = listOf(
+            AnalysisSupport.softScore(rsi - 45.0, 10.0, 0.0),
+            AnalysisSupport.softScore(-macdHistogram, averageStep * 0.9, averageStep * 0.15),
+            AnalysisSupport.rangedScore(-bollingerPosition, -0.15, 0.75, -0.55, 1.05)
+        ).average().coerceIn(0.0, 1.0)
         val patternSignals = AnalysisSupport.analyzeCandlestickPatterns(
             candles = triggerCandles.ifEmpty { sourceCandles },
             averageStep = averageStep
@@ -109,7 +122,40 @@ internal object FeatureExtractor {
             bullishPullbackScore = bullishPullbackScore,
             bearishPullbackScore = bearishPullbackScore,
             bullishBreakoutScore = bullishBreakoutScore,
-            bearishBreakoutScore = bearishBreakoutScore
+            bearishBreakoutScore = bearishBreakoutScore,
+            rsi = rsi,
+            macdHistogram = macdHistogram,
+            bollingerPosition = bollingerPosition,
+            bullishIndicatorScore = bullishIndicatorScore,
+            bearishIndicatorScore = bearishIndicatorScore
         )
+    }
+
+    private fun calculateRsi(prices: List<Double>, period: Int): Double {
+        val deltas = prices.zipWithNext { previous, current -> current - previous }.takeLast(period)
+        if (deltas.isEmpty()) return 50.0
+        val gains = deltas.filter { it > 0.0 }.sum()
+        val losses = deltas.filter { it < 0.0 }.sumOf { abs(it) }
+        if (losses == 0.0) return 100.0
+        val rs = (gains / period) / (losses / period)
+        return 100.0 - (100.0 / (1.0 + rs))
+    }
+
+    private fun calculateMacdHistogram(prices: List<Double>): Double {
+        if (prices.size < 26) return 0.0
+        val fast = prices.takeLast(12).average()
+        val slow = prices.takeLast(26).average()
+        val macd = fast - slow
+        val signal = prices.takeLast(9).average() - slow
+        return macd - signal
+    }
+
+    private fun calculateBollingerPosition(prices: List<Double>): Double {
+        val window = prices.takeLast(minOf(20, prices.size))
+        if (window.size < 8) return 0.0
+        val mean = window.average()
+        val variance = window.map { (it - mean) * (it - mean) }.average()
+        val bandWidth = (kotlin.math.sqrt(variance) * 2.0).coerceAtLeast(mean * 0.0001)
+        return ((window.last() - mean) / bandWidth).coerceIn(-2.0, 2.0)
     }
 }

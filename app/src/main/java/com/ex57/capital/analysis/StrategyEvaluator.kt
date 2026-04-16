@@ -82,6 +82,7 @@ internal object StrategyEvaluator {
             htfBullScore to 1.6,
             features.bullishTrendScore to 1.2,
             features.bullishMomentumScore to 1.0,
+            features.bullishIndicatorScore to 0.9,
             structureBullScore to 1.3,
             bullishMtfScore to 1.4
         )
@@ -89,6 +90,7 @@ internal object StrategyEvaluator {
             htfBearScore to 1.6,
             features.bearishTrendScore to 1.2,
             features.bearishMomentumScore to 1.0,
+            features.bearishIndicatorScore to 0.9,
             structureBearScore to 1.3,
             bearishMtfScore to 1.4
         )
@@ -105,6 +107,7 @@ internal object StrategyEvaluator {
             bullishPatternScore to 1.0,
             bullishIccScore to 1.1,
             features.timeframeScore to 0.9,
+            features.bullishIndicatorScore to 0.8,
             features.bullishBreakoutScore to 0.4
         )
         val pullbackBearComponents = listOf(
@@ -115,6 +118,7 @@ internal object StrategyEvaluator {
             bearishPatternScore to 1.0,
             bearishIccScore to 1.1,
             features.timeframeScore to 0.9,
+            features.bearishIndicatorScore to 0.8,
             features.bearishBreakoutScore to 0.4
         )
         val breakoutBullComponents = listOf(
@@ -125,6 +129,7 @@ internal object StrategyEvaluator {
             bullishPatternScore to 1.0,
             bullishIccScore to 1.0,
             features.timeframeScore to 0.9,
+            features.bullishIndicatorScore to 0.8,
             features.bullishMomentumScore to 0.9
         )
         val breakoutBearComponents = listOf(
@@ -135,6 +140,7 @@ internal object StrategyEvaluator {
             bearishPatternScore to 1.0,
             bearishIccScore to 1.0,
             features.timeframeScore to 0.9,
+            features.bearishIndicatorScore to 0.8,
             features.bearishMomentumScore to 0.9
         )
         val trendPullbackBullSetupScore = weightedAverage(pullbackBullComponents)
@@ -489,43 +495,13 @@ internal object StrategyEvaluator {
         timeframe: String,
         closedTrades: List<ClosedTradeRecord>
     ): TradePerformanceFeedback {
-        val recentTrades = closedTrades
-            .filter { it.symbolCode == symbolCode && it.timeframe == timeframe }
-            .sortedByDescending { it.closedAtEpochMillis }
-            .take(6)
-        if (recentTrades.isEmpty()) {
-            return TradePerformanceFeedback(
-                sampleSize = 0,
-                consecutiveLosses = 0,
-                recentWinRate = 0,
-                recentNetPnlUsd = 0.0,
-                strictModeActive = false,
-                summary = "No closed-trade history yet for $symbolCode $timeframe. The engine is relying on live structure only."
-            )
-        }
-
-        val consecutiveLosses = recentTrades.takeWhile { it.pnlUsd < 0.0 }.count()
-        val winRate = ((recentTrades.count { it.pnlUsd > 0.0 }.toDouble() / recentTrades.size) * 100.0).toInt()
-        val recentNetPnlUsd = recentTrades.sumOf { it.pnlUsd }
-        val averagePnlPercent = recentTrades.map { it.pnlPercent }.average()
-        val strictModeActive = recentTrades.size >= 3 && (
-            consecutiveLosses >= 2 ||
-                (winRate <= 34 && recentNetPnlUsd < 0.0) ||
-                averagePnlPercent <= -0.35
-        )
-        val summary = if (strictModeActive) {
-            "Recent $symbolCode $timeframe history is weak: $consecutiveLosses consecutive losses, $winRate% win rate, net ${formatSignedUsd(recentNetPnlUsd)}. Require cleaner setup quality before entry."
-        } else {
-            "Recent $symbolCode $timeframe history is stable enough: $winRate% win rate across ${recentTrades.size} trades with net ${formatSignedUsd(recentNetPnlUsd)}."
-        }
-
         return TradePerformanceFeedback(
-            sampleSize = recentTrades.size,
-            consecutiveLosses = consecutiveLosses,
-            recentWinRate = winRate,
-            recentNetPnlUsd = recentNetPnlUsd,
-            strictModeActive = strictModeActive,
-            summary = summary
+            sampleSize = 0,
+            consecutiveLosses = 0,
+            recentWinRate = 0,
+            recentNetPnlUsd = 0.0,
+            strictModeActive = false,
+            summary = "Performance memory is disabled. The engine is relying on live market structure only."
         )
     }
 
@@ -666,7 +642,7 @@ internal object StrategyEvaluator {
             reasons += "Historical expectancy is not positive enough for approval."
         }
         if (performanceFeedback.strictModeActive) {
-            reasons += "Recent closed-trade history is weak here, so the next setup needs stronger confirmation before execution."
+            reasons += "Performance memory is restricting this setup."
         }
         if (forecastResearch.stabilityScore < 0.35) {
             reasons += "Recent path stability is weak, so the projected move is too noisy."
@@ -726,6 +702,15 @@ internal object StrategyEvaluator {
                     TradeBias.NEUTRAL -> maxOf(features.bullishMomentumScore, features.bearishMomentumScore) < 0.5
                 },
                 "${describeMomentum(features)}; score ${AnalysisSupport.formatScore(maxOf(features.bullishMomentumScore, features.bearishMomentumScore))} from 4-candle impulse ${AnalysisSupport.formatSigned(features.momentum)}"
+            ),
+            Confirmation(
+                "Indicator Stack",
+                when (bias) {
+                    TradeBias.BULLISH -> features.bullishIndicatorScore >= 0.5
+                    TradeBias.BEARISH -> features.bearishIndicatorScore >= 0.5
+                    TradeBias.NEUTRAL -> maxOf(features.bullishIndicatorScore, features.bearishIndicatorScore) < 0.5
+                },
+                "RSI ${"%.1f".format(features.rsi)}, MACD histogram ${AnalysisSupport.formatSigned(features.macdHistogram)}, Bollinger position ${"%.2f".format(features.bollingerPosition)}"
             ),
             Confirmation(
                 "Market Structure",

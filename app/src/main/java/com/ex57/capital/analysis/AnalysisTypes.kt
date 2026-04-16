@@ -54,7 +54,12 @@ internal data class FeatureExtractionResult(
     val bullishPullbackScore: Double,
     val bearishPullbackScore: Double,
     val bullishBreakoutScore: Double,
-    val bearishBreakoutScore: Double
+    val bearishBreakoutScore: Double,
+    val rsi: Double,
+    val macdHistogram: Double,
+    val bollingerPosition: Double,
+    val bullishIndicatorScore: Double,
+    val bearishIndicatorScore: Double
 )
 
 internal data class StrategyEvaluation(

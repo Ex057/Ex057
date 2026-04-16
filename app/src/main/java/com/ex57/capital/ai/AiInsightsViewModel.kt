@@ -17,6 +17,8 @@ class AiInsightsViewModel(application: Application) : AndroidViewModel(applicati
         AiInsightsUiState(provider = configStore.load().provider)
     )
     val uiState: StateFlow<AiInsightsUiState> = _uiState.asStateFlow()
+    private val _config = MutableStateFlow(configStore.load())
+    val config: StateFlow<AiProviderConfig> = _config.asStateFlow()
 
     fun requestInsight(
         action: AiInsightQuickAction,
@@ -69,5 +71,41 @@ class AiInsightsViewModel(application: Application) : AndroidViewModel(applicati
 
     fun clear() {
         _uiState.value = AiInsightsUiState(provider = configStore.load().provider)
+    }
+
+    fun updateProvider(provider: AiProvider) {
+        configStore.saveProvider(provider)
+        _config.value = configStore.load()
+        _uiState.value = AiInsightsUiState(provider = provider)
+    }
+
+    fun updateOpenAiApiKey(apiKey: String) {
+        configStore.saveOpenAiApiKey(apiKey)
+        _config.value = configStore.load()
+    }
+
+    fun updateOpenAiModel(model: String) {
+        configStore.saveOpenAiModel(model)
+        _config.value = configStore.load()
+    }
+
+    fun updateLocalAiBaseUrl(baseUrl: String) {
+        configStore.saveLocalAiBaseUrl(baseUrl)
+        _config.value = configStore.load()
+    }
+
+    fun updateLocalAiModel(model: String) {
+        configStore.saveLocalAiModel(model)
+        _config.value = configStore.load()
+    }
+
+    fun updateOllamaBaseUrl(baseUrl: String) {
+        configStore.saveOllamaBaseUrl(baseUrl)
+        _config.value = configStore.load()
+    }
+
+    fun updateOllamaModel(model: String) {
+        configStore.saveOllamaModel(model)
+        _config.value = configStore.load()
     }
 }

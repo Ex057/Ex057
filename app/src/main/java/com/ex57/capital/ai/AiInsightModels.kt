@@ -3,7 +3,8 @@ package com.ex57.capital.ai
 enum class AiProvider(val label: String) {
     MOCK("Mock"),
     OPENAI("OpenAI"),
-    OLLAMA("Ollama")
+    OLLAMA("Ollama"),
+    LOCALAI("LocalAI / LM Studio")
 }
 
 enum class AiInsightQuickAction(val label: String) {
@@ -55,7 +56,8 @@ data class AiMarketTimeframeSnapshot(
     val momentumLabel: String,
     val rangePercent: String,
     val changePercent: String,
-    val lastClose: String?
+    val lastClose: String?,
+    val recentOhlc: List<String> = emptyList()
 )
 
 data class AiMtfaSnapshot(
@@ -152,12 +154,14 @@ data class AiInsightResponse(
 )
 
 data class AiProviderConfig(
-    val provider: AiProvider = AiProvider.MOCK,
+    val provider: AiProvider = AiProvider.LOCALAI,
     val openAiApiKey: String? = null,
     val openAiModel: String = "gpt-4.1-mini",
     val openAiBaseUrl: String = "https://api.openai.com",
     val ollamaBaseUrl: String = "http://10.0.2.2:11434",
     val ollamaModel: String = "llama3.1:8b",
+    val localAiBaseUrl: String = "http://10.0.2.2:8080",
+    val localAiModel: String = "local-model",
     val timeoutMillis: Long = 12_000L
 )
 
@@ -175,7 +179,7 @@ data class AiInsightParsedPayload(
 )
 
 data class AiInsightsUiState(
-    val provider: AiProvider = AiProvider.MOCK,
+    val provider: AiProvider = AiProvider.LOCALAI,
     val activeAction: AiInsightQuickAction? = null,
     val isLoading: Boolean = false,
     val response: AiInsightResponse? = null,
