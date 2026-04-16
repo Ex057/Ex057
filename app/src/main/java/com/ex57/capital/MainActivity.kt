@@ -3481,6 +3481,12 @@ private fun ValidationPanel(
                     Text("Run One On Current Data")
                 }
             }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                "Quick check: runs one analysis on the latest loaded candles for the selected mode.",
+                color = secondaryTextColor,
+                fontSize = 12.sp
+            )
             Spacer(modifier = Modifier.height(8.dp))
             OutlinedButton(
                 onClick = {
@@ -3520,6 +3526,12 @@ private fun ValidationPanel(
                     Text("Run Walk-Forward (All Modes)")
                 }
             }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                "Historical test: replays past-only analysis, then checks forward candles for TP/SL order. Scorecard shows resolved performance per mode.",
+                color = secondaryTextColor,
+                fontSize = 12.sp
+            )
             Spacer(modifier = Modifier.height(8.dp))
             OutlinedButton(
                 onClick = {
@@ -3544,6 +3556,12 @@ private fun ValidationPanel(
             ) {
                 Text("Run Synthetic Scenario Suite")
             }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                "Deterministic stress checks on synthetic trend/range/noise scenarios.",
+                color = secondaryTextColor,
+                fontSize = 12.sp
+            )
             Spacer(modifier = Modifier.height(8.dp))
             TextButton(
                 onClick = {
@@ -3627,6 +3645,12 @@ private fun ValidationPanel(
         if (walkForwardResult!!.rows.isNotEmpty()) {
             Spacer(modifier = Modifier.height(12.dp))
             Text("Predictions (tap to inspect)", fontWeight = FontWeight.SemiBold, color = primaryTextColor)
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                "Each row is one historical signal evaluated over the walk-forward horizon.",
+                color = secondaryTextColor,
+                fontSize = 12.sp
+            )
             Spacer(modifier = Modifier.height(8.dp))
             walkForwardResult!!.rows.take(40).forEach { row ->
                 Surface(
