@@ -16,9 +16,13 @@ class AiPromptComposer(
             appendLine("Clearly distinguish heuristic evidence from realized evidence.")
             appendLine("State uncertainty when evidence is mixed.")
             appendLine("Never guarantee outcomes or promise accuracy.")
+            appendLine("Think like a discretionary trader: context -> bias -> setup -> trigger -> invalidation -> risk.")
+            appendLine("Prefer concrete market structure language over generic finance text.")
+            appendLine("If evidence is weak, explicitly recommend wait/no trade and what must change.")
             appendLine("Be concise and actionable.")
             appendLine("Return valid JSON only with keys: title, summary, bullets, caution.")
             appendLine("bullets must be an array of 2 to 4 short strings.")
+            appendLine("bullets must cover: (1) directional read, (2) setup/trigger, (3) invalidation or wait condition.")
         }
 
         val userPrompt = buildUserPrompt(request)
@@ -33,15 +37,15 @@ class AiPromptComposer(
         val context = request.context
         val task = when (request.action) {
             AiInsightQuickAction.MARKET_DEEP_DIVE ->
-                "Do an independent market read from the structured live market snapshot only. Infer direction, pressure, volatility, and what would confirm or weaken the read. Do not reuse app-specific confirmation labels. Return a directional bias as long, short, no trade, or wait for setup."
+                "Do an independent market read from the structured live market snapshot only. Do not reuse app confirmation labels. Build a trader-style read: regime context, directional bias (long/short/no trade/wait), setup quality, trigger condition, and invalidation condition. If multi-timeframe data conflicts, bias should default to wait/no trade."
             AiInsightQuickAction.EXPLAIN_SIGNAL ->
-                "Explain why the engine currently reads this setup the way it does. Focus on bias, confirmation groups, and what matters most right now."
+                "Explain why the engine currently reads this setup this way. Prioritize top drivers, then the single most important trigger and invalidation condition."
             AiInsightQuickAction.EXPLAIN_RISK ->
-                "Explain the main risks in this setup. Focus on uncertainty, structure weakness, forecast limits, and execution risk."
+                "Explain the main risks in this setup like a trader risk memo: regime risk, structure risk, and execution risk."
             AiInsightQuickAction.WHY_NOT_ELIGIBLE ->
                 "Explain clearly why this setup is not yet eligible, or what still blocks it. If it is already eligible, explain what made it pass."
             AiInsightQuickAction.SUMMARIZE_TRADE_PLAN ->
-                "Summarize the trade plan in plain language: direction, entry idea, stop, target, and what would invalidate the plan."
+                "Summarize the trade plan in plain language: direction, entry idea, stop, target, and exact invalidation condition."
             AiInsightQuickAction.MANAGE_OPEN_TRADE ->
                 "Explain what makes sense for the already open trade. Focus on hold, reduce, or exit thinking using only the structured context."
         }

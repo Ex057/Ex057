@@ -6,6 +6,7 @@ import com.ex57.capital.model.ClosedTradeRecord
 import com.ex57.capital.model.ConfirmationMode
 import com.ex57.capital.model.EvidenceSnapshot
 import com.ex57.capital.model.ForecastResearch
+import com.ex57.capital.model.ForecastModelMetrics
 import com.ex57.capital.model.MarketCandle
 import com.ex57.capital.model.SignalFilterSettings
 import com.ex57.capital.model.SetupType
@@ -71,6 +72,7 @@ internal data class StrategyEvaluation(
     val confidence: Int,
     val confirmations: List<Confirmation>,
     val forecastResearch: ForecastResearch,
+    val forecastModelMetrics: ForecastModelMetrics,
     val performanceFeedback: TradePerformanceFeedback,
     val topDownBullScore: Double,
     val topDownBearScore: Double,

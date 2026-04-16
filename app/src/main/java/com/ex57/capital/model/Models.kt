@@ -170,6 +170,7 @@ data class AnalysisResult(
     val nextTrigger: String,
     val mtfaStatus: MtfaStatus? = null,
     val forecastResearch: ForecastResearch? = null,
+    val forecastModelMetrics: ForecastModelMetrics? = null,
     val performanceFeedback: TradePerformanceFeedback? = null,
     val positionGuidance: PositionGuidance? = null
 )
@@ -179,6 +180,18 @@ data class ForecastResearch(
     val strengthScore: Double,
     val stabilityScore: Double,
     val expectedMovePercent: Double,
+    val summary: String
+)
+
+data class ForecastModelMetrics(
+    val modelName: String,
+    val bias: TradeBias,
+    val bullishProbability: Double,
+    val bearishProbability: Double,
+    val directionConfidence: Double,
+    val expectedMovePercent: Double,
+    val forecastDispersion: Double,
+    val targetBeforeStopScore: Double,
     val summary: String
 )
 

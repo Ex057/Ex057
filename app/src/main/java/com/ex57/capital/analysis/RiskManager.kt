@@ -19,9 +19,9 @@ internal object RiskManager {
             evaluation.bias == TradeBias.NEUTRAL ->
                 "${symbol.code} is range-bound on ${input.timeframe}. The model sees mixed pressure, so it is better to wait."
             evaluation.approved ->
-                "${evaluation.setupType.label} ${evaluation.bias.label.lowercase()} setup is active on ${input.timeframe}. Top-down confluence, forecast drift, and weighted score clear ${input.mode.label.lowercase()} mode."
+                "${evaluation.setupType.label} ${evaluation.bias.label.lowercase()} setup is active on ${input.timeframe}. Top-down confluence, forecast drift, sequence model agreement, and weighted score clear ${input.mode.label.lowercase()} mode."
             else ->
-                "${evaluation.setupType.label} ${evaluation.bias.label.lowercase()} pressure exists, but the market still needs cleaner confluence or forecast agreement before execution."
+                "${evaluation.setupType.label} ${evaluation.bias.label.lowercase()} pressure exists, but the market still needs cleaner confluence, sequence-model support, or forecast agreement before execution."
         }
 
         val executionPlan = when (evaluation.setupType) {
@@ -49,6 +49,10 @@ internal object RiskManager {
                 "Forecast lane is mixed. Treat the current setup as exploratory until the next path becomes clearer."
             evaluation.forecastResearch.stabilityScore < 0.40 ->
                 "Projected path stability is weak. Entries need extra patience because the regime is still unstable."
+            evaluation.forecastModelMetrics.forecastDispersion > 0.65 ->
+                "Sequence model dispersion is elevated. Favor waiting for lower-noise continuation before entry."
+            evaluation.forecastModelMetrics.targetBeforeStopScore < 0.4 ->
+                "Sequence model target-before-stop potential is weak. Setup needs a better location or stronger impulse."
             features.topDown.confluenceScore < 0.5 ->
                 "Top-down confluence is weak. Treat this as a developing idea until structure and liquidity align."
             features.newsPulse.pulseScore >= 1.2 ->
@@ -115,6 +119,7 @@ internal object RiskManager {
             nextTrigger = nextTrigger,
             mtfaStatus = AnalysisSupport.buildMtfaStatus(features.topDown),
             forecastResearch = evaluation.forecastResearch,
+            forecastModelMetrics = evaluation.forecastModelMetrics,
             performanceFeedback = evaluation.performanceFeedback
         )
     }

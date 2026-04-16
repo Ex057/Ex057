@@ -41,7 +41,14 @@ object AnalysisStub {
         }
 
         val forecastResearch = ForecastResearchEngine.analyze(input, features)
-        val evaluation = StrategyEvaluator.evaluate(symbol, input, features, forecastResearch)
+        val forecastModelMetrics = ForecastModelEngine.analyze(input, features)
+        val evaluation = StrategyEvaluator.evaluate(
+            symbol = symbol,
+            input = input,
+            features = features,
+            forecastResearch = forecastResearch,
+            forecastModelMetrics = forecastModelMetrics
+        )
         val result = RiskManager.buildResult(symbol, input, features, evaluation)
         return PositionManager.applyPositionContext(result, openPosition, features.last, symbol, timeframe)
     }

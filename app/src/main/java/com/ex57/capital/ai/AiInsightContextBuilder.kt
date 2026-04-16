@@ -77,7 +77,10 @@ object AiInsightContextBuilder {
                     riskNote = it.riskNote,
                     traderGuidance = it.traderGuidance,
                     nextTrigger = it.nextTrigger,
-                    forecastSummary = it.forecastResearch?.summary,
+                    forecastSummary = listOfNotNull(
+                        it.forecastResearch?.summary,
+                        it.forecastModelMetrics?.summary
+                    ).joinToString(" ").ifBlank { null },
                     performanceSummary = null,
                     rejectionReasons = it.rejectionReasons.take(4)
                 )

@@ -3,6 +3,7 @@ package com.ex57.capital.analysis
 import com.ex57.capital.model.Confirmation
 import com.ex57.capital.model.ConfirmationMode
 import com.ex57.capital.model.ClosedTradeRecord
+import com.ex57.capital.model.ForecastModelMetrics
 import com.ex57.capital.model.ForecastResearch
 import com.ex57.capital.model.SetupType
 import com.ex57.capital.model.TradeBias
@@ -16,7 +17,8 @@ internal object StrategyEvaluator {
         symbol: TradingSymbol,
         input: AnalysisInput,
         features: FeatureExtractionResult,
-        forecastResearch: ForecastResearch
+        forecastResearch: ForecastResearch,
+        forecastModelMetrics: ForecastModelMetrics
     ): StrategyEvaluation {
         val modeConfig = AnalysisSupport.configFor(input.mode)
         val filterSettings = input.signalFilters
@@ -180,6 +182,9 @@ internal object StrategyEvaluator {
         )
         val bullishForecastBonus = forecastBiasScore(forecastResearch, bullish = true)
         val bearishForecastBonus = forecastBiasScore(forecastResearch, bullish = false)
+        val bullishModelSupport = forecastModelSupportScore(forecastModelMetrics, bullish = true)
+        val bearishModelSupport = forecastModelSupportScore(forecastModelMetrics, bullish = false)
+        val modelDispersionPenalty = forecastModelMetrics.forecastDispersion * 0.55
 
         val candidateScores = listOf(
             CandidateSetup(
@@ -190,8 +195,10 @@ internal object StrategyEvaluator {
                     (trendPullbackBullSetupScore * 2.1) +
                     (topDownBullScore * 1.2) +
                     (confluenceMetaScore * 1.1) +
-                    (bullishForecastBonus * 0.9) -
-                    riskPenalty
+                    (bullishForecastBonus * 0.9) +
+                    (bullishModelSupport * 0.9) -
+                    riskPenalty -
+                    modelDispersionPenalty
             ),
             CandidateSetup(
                 SetupType.TREND_PULLBACK,
@@ -201,8 +208,10 @@ internal object StrategyEvaluator {
                     (trendPullbackBearSetupScore * 2.1) +
                     (topDownBearScore * 1.2) +
                     (confluenceMetaScore * 1.1) +
-                    (bearishForecastBonus * 0.9) -
-                    riskPenalty
+                    (bearishForecastBonus * 0.9) +
+                    (bearishModelSupport * 0.9) -
+                    riskPenalty -
+                    modelDispersionPenalty
             ),
             CandidateSetup(
                 SetupType.BREAKOUT,
@@ -212,8 +221,10 @@ internal object StrategyEvaluator {
                     (breakoutBullSetupScore * 2.2) +
                     (topDownBullScore * 1.1) +
                     (confluenceMetaScore * 1.0) +
-                    (bullishForecastBonus * 0.9) -
-                    riskPenalty
+                    (bullishForecastBonus * 0.9) +
+                    (bullishModelSupport * 0.85) -
+                    riskPenalty -
+                    modelDispersionPenalty
             ),
             CandidateSetup(
                 SetupType.BREAKOUT,
@@ -223,8 +234,10 @@ internal object StrategyEvaluator {
                     (breakoutBearSetupScore * 2.2) +
                     (topDownBearScore * 1.1) +
                     (confluenceMetaScore * 1.0) +
-                    (bearishForecastBonus * 0.9) -
-                    riskPenalty
+                    (bearishForecastBonus * 0.9) +
+                    (bearishModelSupport * 0.85) -
+                    riskPenalty -
+                    modelDispersionPenalty
             )
         )
         val bestCandidate = candidateScores.maxByOrNull { it.score }!!
@@ -247,9 +260,42 @@ internal object StrategyEvaluator {
             forecastResearch = forecastResearch,
             bias = bestCandidate.bias
         )
+        val modelSupportScore = when (bestCandidate.bias) {
+            TradeBias.BULLISH -> forecastModelMetrics.bullishProbability
+            TradeBias.BEARISH -> forecastModelMetrics.bearishProbability
+            TradeBias.NEUTRAL -> 0.0
+        }
+        val modelSupportThreshold = when (input.mode) {
+            ConfirmationMode.CONSERVATIVE -> 0.62
+            ConfirmationMode.MODERATE -> 0.55
+            ConfirmationMode.AGGRESSIVE -> 0.50
+            ConfirmationMode.LENIENT -> 0.45
+        }
+        val modelConfidenceThreshold = when (input.mode) {
+            ConfirmationMode.CONSERVATIVE -> 0.50
+            ConfirmationMode.MODERATE -> 0.40
+            ConfirmationMode.AGGRESSIVE -> 0.30
+            ConfirmationMode.LENIENT -> 0.20
+        }
+        val modelDispersionThreshold = when (input.mode) {
+            ConfirmationMode.CONSERVATIVE -> 0.40
+            ConfirmationMode.MODERATE -> 0.55
+            ConfirmationMode.AGGRESSIVE -> 0.70
+            ConfirmationMode.LENIENT -> 0.85
+        }
+        val targetBeforeStopThreshold = when (input.mode) {
+            ConfirmationMode.CONSERVATIVE -> 0.55
+            ConfirmationMode.MODERATE -> 0.48
+            ConfirmationMode.AGGRESSIVE -> 0.40
+            ConfirmationMode.LENIENT -> 0.30
+        }
         val forecastHardConflict = forecastResearch.stabilityScore >= 0.70 &&
             forecastResearch.bias != TradeBias.NEUTRAL &&
             forecastResearch.bias != bestCandidate.bias
+        val modelHardConflict = forecastModelMetrics.bias != TradeBias.NEUTRAL &&
+            bestCandidate.bias != TradeBias.NEUTRAL &&
+            forecastModelMetrics.bias != bestCandidate.bias &&
+            forecastModelMetrics.directionConfidence >= 0.58
         val performanceFeedback = buildTradePerformanceFeedback(
             symbolCode = symbol.code,
             timeframe = input.timeframe,
@@ -262,8 +308,8 @@ internal object StrategyEvaluator {
             ConfirmationMode.LENIENT -> true
         }
         val hardBlock = when (input.mode) {
-            ConfirmationMode.CONSERVATIVE -> filterSettings.enforceHardBlocks && (severeNoise || severeNews || forecastHardConflict)
-            ConfirmationMode.MODERATE -> filterSettings.enforceHardBlocks && ((severeNoise && severeNews) || forecastHardConflict)
+            ConfirmationMode.CONSERVATIVE -> filterSettings.enforceHardBlocks && (severeNoise || severeNews || forecastHardConflict || modelHardConflict)
+            ConfirmationMode.MODERATE -> filterSettings.enforceHardBlocks && ((severeNoise && severeNews) || forecastHardConflict || modelHardConflict)
             ConfirmationMode.AGGRESSIVE -> filterSettings.enforceHardBlocks && severeNoise && severeNews && confluenceMetaScore < 0.4
             ConfirmationMode.LENIENT -> filterSettings.enforceHardBlocks && severeNoise && severeNews && topDownDirectionalGate < 0.25
         }
@@ -274,6 +320,10 @@ internal object StrategyEvaluator {
             ConfirmationMode.LENIENT -> 0.0
         }
         val forecastGatePassed = !filterSettings.requireForecastSupport || forecastSupportScore >= forecastThreshold
+        val modelSupportGatePassed = !filterSettings.requireForecastSupport || modelSupportScore >= modelSupportThreshold
+        val modelConfidenceGatePassed = !filterSettings.requireForecastSupport || forecastModelMetrics.directionConfidence >= modelConfidenceThreshold
+        val modelDispersionGatePassed = !filterSettings.requireForecastSupport || forecastModelMetrics.forecastDispersion <= modelDispersionThreshold
+        val targetBeforeStopGatePassed = !filterSettings.requireForecastSupport || forecastModelMetrics.targetBeforeStopScore >= targetBeforeStopThreshold
         val setupStateGatePassed = !filterSettings.requireSetupState || setupStateAllowed
         val directionalEdgeGatePassed = !filterSettings.requireDirectionalEdge || directionalEdge >= modeConfig.directionalEdgeThreshold
         val setupCountGatePassed = !filterSettings.requireSetupConfirmations || setupQualityCount >= modeConfig.requiredSetupConfirmations
@@ -294,6 +344,10 @@ internal object StrategyEvaluator {
             topDownDirectionalGate >= modeConfig.topDownDirectionalThreshold &&
             directionalEdgeGatePassed &&
             forecastGatePassed &&
+            modelSupportGatePassed &&
+            modelConfidenceGatePassed &&
+            modelDispersionGatePassed &&
+            targetBeforeStopGatePassed &&
             setupStateGatePassed
         ) {
             bestCandidate.bias
@@ -321,7 +375,12 @@ internal object StrategyEvaluator {
             bullishIccScore = bullishIccScore,
             bearishIccScore = bearishIccScore,
             bullishMtfScore = bullishMtfScore,
-            bearishMtfScore = bearishMtfScore
+            bearishMtfScore = bearishMtfScore,
+            forecastModelMetrics = forecastModelMetrics,
+            modelSupportThreshold = modelSupportThreshold,
+            modelConfidenceThreshold = modelConfidenceThreshold,
+            modelDispersionThreshold = modelDispersionThreshold,
+            targetBeforeStopThreshold = targetBeforeStopThreshold
         )
 
         val stage = when {
@@ -338,6 +397,10 @@ internal object StrategyEvaluator {
             setupCountGatePassed &&
             confluenceGatePassed &&
             forecastGatePassed &&
+            modelSupportGatePassed &&
+            modelConfidenceGatePassed &&
+            modelDispersionGatePassed &&
+            targetBeforeStopGatePassed &&
             riskPenaltyGatePassed &&
             historyGatePassed
         val expectancyGatePassed = if (!filterSettings.requireExpectancy) {
@@ -391,6 +454,8 @@ internal object StrategyEvaluator {
             approved -> TradeDecision.ELIGIBLE
             performanceFeedback.strictModeActive && bias != TradeBias.NEUTRAL -> TradeDecision.WATCHLIST
             filterSettings.requireForecastSupport && forecastSupportScore < forecastThreshold && bestCandidate.bias != TradeBias.NEUTRAL -> TradeDecision.WATCHLIST
+            filterSettings.requireForecastSupport && !modelSupportGatePassed && bestCandidate.bias != TradeBias.NEUTRAL -> TradeDecision.WATCHLIST
+            filterSettings.requireForecastSupport && !modelDispersionGatePassed && bestCandidate.bias != TradeBias.NEUTRAL -> TradeDecision.WATCHLIST
             input.mode == ConfirmationMode.LENIENT && bias != TradeBias.NEUTRAL && !hardBlock -> TradeDecision.WATCHLIST
             baseApproval -> TradeDecision.WATCHLIST
             filterSettings.requireExpectancy && stage >= 3 && expectancyValue <= 0.0 -> TradeDecision.REJECT
@@ -413,8 +478,17 @@ internal object StrategyEvaluator {
             directionalEdge = directionalEdge,
             directionalEdgeThreshold = modeConfig.directionalEdgeThreshold,
             forecastResearch = forecastResearch,
+            forecastModelMetrics = forecastModelMetrics,
             forecastSupportScore = forecastSupportScore,
             forecastThreshold = forecastThreshold,
+            modelSupportScore = modelSupportScore,
+            modelSupportThreshold = modelSupportThreshold,
+            modelDispersion = forecastModelMetrics.forecastDispersion,
+            modelDispersionThreshold = modelDispersionThreshold,
+            modelDirectionConfidence = forecastModelMetrics.directionConfidence,
+            modelDirectionConfidenceThreshold = modelConfidenceThreshold,
+            targetBeforeStopScore = forecastModelMetrics.targetBeforeStopScore,
+            targetBeforeStopThreshold = targetBeforeStopThreshold,
             setupStateAllowed = setupStateGatePassed,
             setupQualityScore = setupQualityScore,
             setupQualityThreshold = setupQualityThreshold(modeConfig, bestCandidate.type),
@@ -440,6 +514,7 @@ internal object StrategyEvaluator {
             confidence = confidence,
             confirmations = confirmations,
             forecastResearch = forecastResearch,
+            forecastModelMetrics = forecastModelMetrics,
             performanceFeedback = performanceFeedback,
             topDownBullScore = topDownBullScore,
             topDownBearScore = topDownBearScore,
@@ -487,6 +562,17 @@ internal object StrategyEvaluator {
             else -> {
                 (forecastResearch.strengthScore * 0.60) + (forecastResearch.stabilityScore * 0.40)
             }
+        }.coerceIn(0.0, 1.0)
+    }
+
+    private fun forecastModelSupportScore(
+        forecastModelMetrics: ForecastModelMetrics,
+        bullish: Boolean
+    ): Double {
+        return if (bullish) {
+            forecastModelMetrics.bullishProbability
+        } else {
+            forecastModelMetrics.bearishProbability
         }.coerceIn(0.0, 1.0)
     }
 
@@ -580,8 +666,17 @@ internal object StrategyEvaluator {
         directionalEdge: Double,
         directionalEdgeThreshold: Double,
         forecastResearch: ForecastResearch,
+        forecastModelMetrics: ForecastModelMetrics,
         forecastSupportScore: Double,
         forecastThreshold: Double,
+        modelSupportScore: Double,
+        modelSupportThreshold: Double,
+        modelDispersion: Double,
+        modelDispersionThreshold: Double,
+        modelDirectionConfidence: Double,
+        modelDirectionConfidenceThreshold: Double,
+        targetBeforeStopScore: Double,
+        targetBeforeStopThreshold: Double,
         setupStateAllowed: Boolean,
         setupQualityScore: Double,
         setupQualityThreshold: Double,
@@ -623,6 +718,18 @@ internal object StrategyEvaluator {
                 else -> "Forecast lane disagrees with the setup or shows unstable path behavior."
             }
         }
+        if (filterSettings.requireForecastSupport && modelSupportScore < modelSupportThreshold) {
+            reasons += "Model direction support is below the ${AnalysisSupport.formatScore(modelSupportThreshold)} threshold for ${mode.label.lowercase()} mode."
+        }
+        if (filterSettings.requireForecastSupport && modelDirectionConfidence < modelDirectionConfidenceThreshold) {
+            reasons += "Model direction confidence is too weak for ${mode.label.lowercase()} mode."
+        }
+        if (filterSettings.requireForecastSupport && modelDispersion > modelDispersionThreshold) {
+            reasons += "Model forecast dispersion is too high, indicating unstable path behavior."
+        }
+        if (filterSettings.requireForecastSupport && targetBeforeStopScore < targetBeforeStopThreshold) {
+            reasons += "Model target-before-stop potential is too low for immediate execution."
+        }
         if (filterSettings.requireSetupState && !setupStateAllowed) {
             reasons += "Current setup/trigger state is not valid for this mode."
         }
@@ -646,6 +753,9 @@ internal object StrategyEvaluator {
         }
         if (forecastResearch.stabilityScore < 0.35) {
             reasons += "Recent path stability is weak, so the projected move is too noisy."
+        }
+        if (forecastModelMetrics.bias == TradeBias.NEUTRAL && filterSettings.requireForecastSupport) {
+            reasons += "Sequence forecast model is neutral and does not yet confirm directional edge."
         }
         if (decision == TradeDecision.WATCHLIST && !approved) {
             reasons += "Setup is usable for monitoring, but not strong enough for immediate approval."
@@ -673,8 +783,18 @@ internal object StrategyEvaluator {
         bullishIccScore: Double,
         bearishIccScore: Double,
         bullishMtfScore: Double,
-        bearishMtfScore: Double
+        bearishMtfScore: Double,
+        forecastModelMetrics: ForecastModelMetrics,
+        modelSupportThreshold: Double,
+        modelConfidenceThreshold: Double,
+        modelDispersionThreshold: Double,
+        targetBeforeStopThreshold: Double
     ): List<Confirmation> {
+        val modelSupport = when (bias) {
+            TradeBias.BULLISH -> forecastModelMetrics.bullishProbability
+            TradeBias.BEARISH -> forecastModelMetrics.bearishProbability
+            TradeBias.NEUTRAL -> maxOf(forecastModelMetrics.bullishProbability, forecastModelMetrics.bearishProbability)
+        }
         return listOf(
             Confirmation(
                 "Higher-Timeframe Bias",
@@ -812,6 +932,30 @@ internal object StrategyEvaluator {
                 "News Pulse Filter",
                 features.newsPulse.pulseScore < 1.2 || bias != TradeBias.NEUTRAL,
                 "${describeNews(features)}; ${features.newsPulse.summary}"
+            ),
+            Confirmation(
+                "Model Direction Agreement",
+                when (bias) {
+                    TradeBias.BULLISH -> forecastModelMetrics.bias == TradeBias.BULLISH || forecastModelMetrics.bullishProbability >= modelSupportThreshold
+                    TradeBias.BEARISH -> forecastModelMetrics.bias == TradeBias.BEARISH || forecastModelMetrics.bearishProbability >= modelSupportThreshold
+                    TradeBias.NEUTRAL -> forecastModelMetrics.bias == TradeBias.NEUTRAL
+                },
+                "${forecastModelMetrics.modelName}: bias ${forecastModelMetrics.bias.label}, support ${AnalysisSupport.formatScore(modelSupport)} vs threshold ${AnalysisSupport.formatScore(modelSupportThreshold)}"
+            ),
+            Confirmation(
+                "Model Direction Confidence",
+                forecastModelMetrics.directionConfidence >= modelConfidenceThreshold,
+                "Confidence ${AnalysisSupport.formatScore(forecastModelMetrics.directionConfidence)} vs threshold ${AnalysisSupport.formatScore(modelConfidenceThreshold)}"
+            ),
+            Confirmation(
+                "Model Dispersion Check",
+                forecastModelMetrics.forecastDispersion <= modelDispersionThreshold,
+                "Dispersion ${AnalysisSupport.formatScore(forecastModelMetrics.forecastDispersion)} must stay below ${AnalysisSupport.formatScore(modelDispersionThreshold)}"
+            ),
+            Confirmation(
+                "Model Target-First Potential",
+                forecastModelMetrics.targetBeforeStopScore >= targetBeforeStopThreshold,
+                "Target-before-stop score ${AnalysisSupport.formatScore(forecastModelMetrics.targetBeforeStopScore)} vs threshold ${AnalysisSupport.formatScore(targetBeforeStopThreshold)}"
             )
         )
     }

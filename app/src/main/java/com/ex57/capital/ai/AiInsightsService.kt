@@ -84,8 +84,14 @@ class MockAiInsightsService : AiProviderService {
         val signal = request.context.signal
         val evidence = request.context.evidence
         val market = request.context.market
+        val symbol = request.context.symbolCode
+        val timeframe = request.context.timeframe
+        val directionalRead = deriveDirectionalRead(market.shortTrend, market.momentumLabel, market.structureLabel)
+        val setupRead = deriveSetupRead(market.structureLabel, market.volatilityLabel, market.rangePercent)
+        val triggerRead = deriveTriggerRead(market.nearestSupport, market.nearestResistance, directionalRead)
+        val invalidationRead = deriveInvalidationRead(market.nearestSupport, market.nearestResistance, directionalRead)
         val title = when (request.action) {
-            AiInsightQuickAction.MARKET_DEEP_DIVE -> "Independent Market Read"
+            AiInsightQuickAction.MARKET_DEEP_DIVE -> "Independent Market Read • $symbol $timeframe"
             AiInsightQuickAction.EXPLAIN_SIGNAL -> "Signal Explanation"
             AiInsightQuickAction.EXPLAIN_RISK -> "Risk Overview"
             AiInsightQuickAction.WHY_NOT_ELIGIBLE -> "Eligibility Explanation"
@@ -94,35 +100,41 @@ class MockAiInsightsService : AiProviderService {
         }
         val bullets = when (request.action) {
             AiInsightQuickAction.MARKET_DEEP_DIVE -> listOf(
-                "Live price is ${market.livePrice ?: "unavailable"} with ${market.shortTrend.lowercase()} and ${market.momentumLabel.lowercase()}.",
-                "Structure reads as ${market.structureLabel.lowercase()} with ${market.volatilityLabel.lowercase()} and ${market.rangePercent} total range in the loaded window.",
-                "Nearest levels are support ${market.nearestSupport ?: "-"} and resistance ${market.nearestResistance ?: "-"}, so wait for cleaner expansion or rejection around those points."
+                "$directionalRead Setup quality: $setupRead",
+                triggerRead,
+                invalidationRead,
+                "Levels: support ${market.nearestSupport ?: "-"}, resistance ${market.nearestResistance ?: "-"}; volatility ${market.volatilityLabel.lowercase()}."
             )
             AiInsightQuickAction.EXPLAIN_SIGNAL -> listOf(
-                "Bias is ${signal?.bias?.lowercase() ?: "unavailable"} with ${signal?.confidence ?: 0}% confidence from the current confirmation stack.",
-                "Decision is ${signal?.decision?.lowercase() ?: "unavailable"}, so the engine is treating this as ${if (signal?.approved == true) "actionable" else "non-actionable"} right now.",
-                "Key trigger to watch: ${signal?.nextTrigger ?: "No trigger available"}"
+                "Bias ${signal?.bias?.lowercase() ?: "unavailable"} at ${signal?.confidence ?: 0}%: this is driven by current structure + momentum alignment on $timeframe.",
+                "Decision ${signal?.decision?.lowercase() ?: "unavailable"} means ${if (signal?.approved == true) "conditions are close to executable" else "conditions are still incomplete"} under current guardrails.",
+                "Trader trigger: ${signal?.nextTrigger ?: triggerRead}",
+                "Invalidation: ${signal?.riskNote ?: invalidationRead}"
             )
             AiInsightQuickAction.EXPLAIN_RISK -> listOf(
+                "Regime risk: ${market.volatilityLabel.lowercase()} volatility with ${market.structureLabel.lowercase()} structure can break setup quality quickly.",
                 signal?.riskNote ?: "Risk note is unavailable because engine analysis has not been run.",
-                "Heuristic evidence: ${evidence?.heuristicSummary ?: "No heuristic evidence available."}",
-                "Realized evidence: ${evidence?.realizedSummary ?: "No realized evidence available."}"
+                "Evidence check: ${evidence?.heuristicSummary ?: "No heuristic evidence available."}",
+                "Execution risk: spread/slippage sensitivity increases near level tests (${market.nearestSupport ?: "-"} / ${market.nearestResistance ?: "-"})"
             )
             AiInsightQuickAction.WHY_NOT_ELIGIBLE -> listOf(
                 signal?.rejectionReasons?.firstOrNull() ?: "The setup is already eligible under the current guardrails.",
                 "Decision state is ${signal?.decision ?: "Unavailable"}.",
-                "Trade candidate flag is ${if (signal?.tradeCandidate == true) "on" else "off"}."
+                "Trade candidate flag is ${if (signal?.tradeCandidate == true) "on" else "off"}.",
+                "What to wait for: ${signal?.nextTrigger ?: triggerRead}"
             )
             AiInsightQuickAction.SUMMARIZE_TRADE_PLAN -> listOf(
-                "Direction: ${signal?.bias ?: "Unavailable"}",
-                "Entry / stop / target come from the current structured trade plan.",
-                "Invalidation starts when the engine’s trigger and risk note no longer support the setup."
+                "Direction: ${signal?.bias ?: "Unavailable"} (${signal?.decision ?: "Unknown"}).",
+                "Entry / stop / target come from the structured trade plan and should be treated as scenario levels, not certainty.",
+                "Trigger: ${signal?.nextTrigger ?: triggerRead}",
+                "Invalidation: ${signal?.riskNote ?: invalidationRead}"
             )
             AiInsightQuickAction.MANAGE_OPEN_TRADE -> listOf(
                 request.context.openTrade?.let { "Open trade is ${it.side.lowercase()} on ${it.timeframe} with management stage ${it.managementStage}." }
                     ?: "There is no open trade in context.",
                 signal?.traderGuidance ?: "Run engine analysis before using management guidance.",
-                "Do not treat this as a guarantee. Reassess if structure or risk changes."
+                "If price action loses structure around key level, reduce risk or exit rather than averaging.",
+                "Reassess immediately if volatility regime shifts."
             )
         }.take(4)
 
@@ -132,7 +144,7 @@ class MockAiInsightsService : AiProviderService {
             title = title,
             summary = when (request.action) {
                 AiInsightQuickAction.MARKET_DEEP_DIVE ->
-                    "${request.context.symbolCode} shows ${market.shortTrend.lowercase()} conditions with ${market.momentumLabel.lowercase()} and ${market.structureLabel.lowercase()} structure."
+                    "$symbol $timeframe: ${market.structureLabel.lowercase()} with ${market.momentumLabel.lowercase()} and ${market.shortTrend.lowercase()} flow. Bias: ${directionalRead.substringAfter("Bias: ").substringBefore(".")}."
                 AiInsightQuickAction.WHY_NOT_ELIGIBLE ->
                     if (signal?.approved == true) "The setup currently passes the guardrails." else "The setup is being held back by one or more guardrails."
                 else -> signal?.summary ?: "Engine analysis is not available for this request."
@@ -147,6 +159,75 @@ class MockAiInsightsService : AiProviderService {
             requestHash = prompt.requestHash,
             generatedAtEpochMillis = System.currentTimeMillis()
         )
+    }
+}
+
+private fun deriveDirectionalRead(
+    shortTrend: String,
+    momentum: String,
+    structure: String
+): String {
+    val trend = shortTrend.lowercase()
+    val mom = momentum.lowercase()
+    val struct = structure.lowercase()
+    return when {
+        (trend.contains("up") || trend.contains("bull")) && !struct.contains("range") ->
+            "Bias: long-leaning. Trend and structure are aligned with continuation pressure."
+        (trend.contains("down") || trend.contains("bear")) && !struct.contains("range") ->
+            "Bias: short-leaning. Trend and structure are aligned with downside pressure."
+        struct.contains("range") || mom.contains("flat") ->
+            "Bias: wait / no trade. Market is range-like or momentum is too flat."
+        else ->
+            "Bias: conditional. Direction exists but structure is mixed, so wait for cleaner confirmation."
+    }
+}
+
+private fun deriveSetupRead(
+    structure: String,
+    volatility: String,
+    rangePercent: String?
+): String {
+    val struct = structure.lowercase()
+    val vol = volatility.lowercase()
+    return when {
+        struct.contains("break") && !vol.contains("high") ->
+            "breakout continuation is viable if follow-through holds."
+        struct.contains("trend") && vol.contains("low") ->
+            "trend continuation setup is constructive with controlled volatility."
+        struct.contains("range") && vol.contains("high") ->
+            "setup quality is weak: noisy range and fakeout risk are elevated."
+        else ->
+            "setup quality is moderate; needs cleaner trigger at key level."
+    } + (rangePercent?.let { " Window range: $it." } ?: "")
+}
+
+private fun deriveTriggerRead(
+    support: String?,
+    resistance: String?,
+    directionalRead: String
+): String {
+    return when {
+        directionalRead.contains("long-leaning") ->
+            "Trigger: accept long only after bullish reaction above ${support ?: "support"} or clean break/retest through ${resistance ?: "resistance"}."
+        directionalRead.contains("short-leaning") ->
+            "Trigger: accept short only after bearish rejection below ${resistance ?: "resistance"} or break/retest through ${support ?: "support"}."
+        else ->
+            "Trigger: wait for decisive break from ${support ?: "support"} / ${resistance ?: "resistance"} with momentum confirmation."
+    }
+}
+
+private fun deriveInvalidationRead(
+    support: String?,
+    resistance: String?,
+    directionalRead: String
+): String {
+    return when {
+        directionalRead.contains("long-leaning") ->
+            "Invalidation: long thesis weakens if price closes back below ${support ?: "support"} or fails to hold breakout."
+        directionalRead.contains("short-leaning") ->
+            "Invalidation: short thesis weakens if price reclaims ${resistance ?: "resistance"} or breakdown fails."
+        else ->
+            "Invalidation: no-trade stance ends only when structure resolves cleanly away from ${support ?: "support"} / ${resistance ?: "resistance"}."
     }
 }
 

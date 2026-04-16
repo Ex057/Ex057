@@ -9,6 +9,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.calculateZoom
@@ -38,6 +39,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ShowChart
 import androidx.compose.material.icons.outlined.CallSplit
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
@@ -50,6 +53,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -107,6 +111,7 @@ import com.ex57.capital.model.DataQuality
 import com.ex57.capital.model.FeedPhase
 import com.ex57.capital.model.FeedState
 import com.ex57.capital.model.ForecastResearch
+import com.ex57.capital.model.ForecastModelMetrics
 import com.ex57.capital.model.MarketCandle
 import com.ex57.capital.model.PositionRecommendation
 import com.ex57.capital.model.SignalFilterSettings
@@ -125,8 +130,10 @@ import com.ex57.capital.ui.theme.EX57Theme
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -182,6 +189,12 @@ private enum class AppTab(
         title = "Charts",
         subtitle = "Full chart view with timeframe access and live feed context."
     ),
+    VALIDATION(
+        label = "Validation",
+        icon = Icons.Outlined.CallSplit,
+        title = "Validation",
+        subtitle = "Run deterministic scenario checks against the same analysis engine."
+    ),
     SETTINGS(
         label = "Settings",
         icon = Icons.Outlined.Settings,
@@ -218,6 +231,91 @@ private data class AlertMonitorState(
     val timeframe: String = "15m",
     val intervalMinutes: Int = 15,
     val lastCheckLabel: String = "Not started"
+)
+
+private enum class ValidationExpectation(val label: String) {
+    LEAN_BULLISH("Lean bullish"),
+    LEAN_BEARISH("Lean bearish"),
+    STAY_DEFENSIVE("Stay defensive")
+}
+
+private data class ValidationScenario(
+    val name: String,
+    val timeframe: String,
+    val description: String,
+    val expectation: ValidationExpectation,
+    val candles: List<MarketCandle>
+)
+
+private data class ValidationRunResult(
+    val scenarioName: String,
+    val mode: ConfirmationMode,
+    val expectation: ValidationExpectation,
+    val passed: Boolean,
+    val actualBias: TradeBias,
+    val decision: TradeDecision,
+    val confidence: Int,
+    val modelBias: TradeBias?,
+    val modelConfidence: Int?,
+    val passedConfirmations: Int,
+    val totalConfirmations: Int,
+    val notes: String
+)
+
+private data class OneShotValidationResult(
+    val mode: ConfirmationMode,
+    val timeframe: String,
+    val candlesUsed: Int,
+    val result: AnalysisResult
+)
+
+private enum class PredictionOutcome(val label: String) {
+    WIN("Win"),
+    LOSS("Loss"),
+    NO_HIT("No Hit"),
+    NOT_TRIGGERED("Not Triggered")
+}
+
+private data class WalkForwardPredictionRow(
+    val mode: ConfirmationMode,
+    val signalEpoch: Long,
+    val signalIndex: Int,
+    val bias: TradeBias,
+    val decision: TradeDecision,
+    val confidence: Int,
+    val entry: Double,
+    val stopLoss: Double,
+    val takeProfit: Double,
+    val outcome: PredictionOutcome,
+    val outcomeReason: String
+)
+
+private data class WalkForwardModeScore(
+    val mode: ConfirmationMode,
+    val totalSignals: Int,
+    val triggeredSignals: Int,
+    val wins: Int,
+    val losses: Int,
+    val noHit: Int,
+    val notTriggered: Int,
+    val winRateResolved: Int
+)
+
+private data class WalkForwardRunResult(
+    val datasetSize: Int,
+    val horizonCandles: Int,
+    val modeScores: List<WalkForwardModeScore>,
+    val rows: List<WalkForwardPredictionRow>
+)
+
+private data class HomeProbabilityStats(
+    val mode: ConfirmationMode,
+    val totalSignals: Int,
+    val resolvedSignals: Int,
+    val wins: Int,
+    val losses: Int,
+    val pTpBeforeSl: Int,
+    val pSlBeforeTp: Int
 )
 
 private val AlertMonitorIntervals = listOf(5, 15, 30, 60)
@@ -488,10 +586,10 @@ fun EX57App(
                         }
                     )
                     .padding(padding)
-                    .padding(horizontal = if (selectedTab == AppTab.HOME || selectedTab == AppTab.SETTINGS) 16.dp else 0.dp)
+                    .padding(horizontal = if (selectedTab == AppTab.HOME || selectedTab == AppTab.SETTINGS || selectedTab == AppTab.VALIDATION) 16.dp else 0.dp)
                     .padding(bottom = if (selectedTab == AppTab.CHARTS) 0.dp else 12.dp)
             ) {
-                if (selectedTab == AppTab.HOME || selectedTab == AppTab.SETTINGS) {
+                if (selectedTab == AppTab.HOME || selectedTab == AppTab.SETTINGS || selectedTab == AppTab.VALIDATION) {
                     FloatingHeader(tab = selectedTab)
                     Spacer(modifier = Modifier.height(16.dp))
                 }
@@ -554,6 +652,12 @@ fun EX57App(
                         onPinchZoomScaleChange = { chartPinchZoomScale = it },
                         onAnalyzeMarket = { analyzeMarket(source = "Chart") },
                         isAnalyzingMarket = isAnalyzingMarket
+                    )
+                    AppTab.VALIDATION -> ValidationPanel(
+                        selectedSymbol = selectedSymbol,
+                        selectedTimeframe = selectedTimeframe,
+                        candles = candleHistory,
+                        signalFilters = signalFilterSettings
                     )
                     AppTab.SETTINGS -> SettingsPanel(
                         selectedMode = selectedMode,
@@ -642,44 +746,518 @@ private fun HomeDashboard(
     onAnalyzeMarket: () -> Unit,
     isAnalyzingMarket: Boolean
 ) {
-    HeroCard(selectedMode)
-    Spacer(modifier = Modifier.height(16.dp))
-    ControlsPanel(
-        selectedSymbol = selectedSymbol,
-        onSymbolChange = onSymbolChange,
-        selectedTimeframe = selectedTimeframe,
-        onTimeframeChange = onTimeframeChange,
-        selectedMode = selectedMode,
-        onModeChange = onModeChange,
-        onAnalyzeMarket = onAnalyzeMarket,
-        isAnalyzingMarket = isAnalyzingMarket,
-        riskPercentInput = riskPercentInput,
-        onRiskPercentInputChange = onRiskPercentInputChange
-    )
-    Spacer(modifier = Modifier.height(16.dp))
-    AiInsightsCard(
-        insightContext = aiInsightContext,
-        uiState = aiInsightsState,
-        onActionSelected = onAiInsightAction,
-        onRetry = onRetryAiInsight,
-        onClear = onClearAiInsight,
-        hasOpenTrade = openPosition != null
-    )
-    Spacer(modifier = Modifier.height(16.dp))
-    SignalCard(
-        priceViewModel = priceViewModel,
-        recentPrices = recentPrices,
-        candles = candles,
-        dataQuality = dataQuality,
-        feedState = feedState,
-        selectedSymbol = selectedSymbol,
-        selectedTimeframe = selectedTimeframe,
-        selectedMode = selectedMode,
-        signalFilters = signalFilters,
-        analysisResult = analysisResult,
-        openPosition = openPosition,
-        riskPercentInput = riskPercentInput,
-        accountEquityUsd = accountEquityUsd
+    var showOverview by rememberSaveable { mutableStateOf(false) }
+    var showControls by rememberSaveable { mutableStateOf(true) }
+    var showHistoryProjection by rememberSaveable { mutableStateOf(false) }
+    var showPredictionSummary by rememberSaveable { mutableStateOf(true) }
+    var showAiInsights by rememberSaveable { mutableStateOf(false) }
+    var showSignalConsole by rememberSaveable { mutableStateOf(false) }
+    var homeProbabilityStats by remember { mutableStateOf<HomeProbabilityStats?>(null) }
+    var homeProbabilityLoading by remember { mutableStateOf(false) }
+
+    LaunchedEffect(
+        analysisResult,
+        candles,
+        selectedSymbol.code,
+        selectedTimeframe,
+        selectedMode,
+        signalFilters
+    ) {
+        if (analysisResult == null) {
+            homeProbabilityStats = null
+            homeProbabilityLoading = false
+            return@LaunchedEffect
+        }
+        homeProbabilityLoading = true
+        val stats = withContext(Dispatchers.Default) {
+            computeHomeProbabilityStats(
+                symbol = selectedSymbol,
+                timeframe = selectedTimeframe,
+                mode = selectedMode,
+                candles = candles,
+                signalFilters = signalFilters
+            )
+        }
+        homeProbabilityStats = stats
+        homeProbabilityLoading = false
+    }
+
+    CollapsibleSection(
+        title = "Overview",
+        expanded = showOverview,
+        onExpandedChange = { showOverview = it }
+    ) {
+        HeroCard(selectedMode)
+    }
+    Spacer(modifier = Modifier.height(12.dp))
+    CollapsibleSection(
+        title = "Controls",
+        expanded = showControls,
+        onExpandedChange = { showControls = it }
+    ) {
+        ControlsPanel(
+            selectedSymbol = selectedSymbol,
+            onSymbolChange = onSymbolChange,
+            selectedTimeframe = selectedTimeframe,
+            onTimeframeChange = onTimeframeChange,
+            selectedMode = selectedMode,
+            onModeChange = onModeChange,
+            onAnalyzeMarket = onAnalyzeMarket,
+            isAnalyzingMarket = isAnalyzingMarket,
+            riskPercentInput = riskPercentInput,
+            onRiskPercentInputChange = onRiskPercentInputChange
+        )
+    }
+    Spacer(modifier = Modifier.height(12.dp))
+    CollapsibleSection(
+        title = "Historical + Future",
+        expanded = showHistoryProjection,
+        onExpandedChange = { showHistoryProjection = it }
+    ) {
+        HistoricalAndForecastCard(
+            candles = candles,
+            analysisResult = analysisResult,
+            timeframe = selectedTimeframe,
+            pricePrecision = selectedSymbol.spec.pricePrecision
+        )
+    }
+    Spacer(modifier = Modifier.height(12.dp))
+    analysisResult?.let { result ->
+        CollapsibleSection(
+            title = "Prediction Summary",
+            expanded = showPredictionSummary,
+            onExpandedChange = { showPredictionSummary = it }
+        ) {
+            PredictionSummaryCard(
+                analysisResult = result,
+                selectedMode = selectedMode,
+                candles = candles,
+                pricePrecision = selectedSymbol.spec.pricePrecision,
+                probabilityStats = homeProbabilityStats,
+                probabilityLoading = homeProbabilityLoading
+            )
+        }
+        Spacer(modifier = Modifier.height(12.dp))
+    }
+
+    if (analysisResult != null) {
+        CollapsibleSection(
+            title = "AI Insights",
+            expanded = showAiInsights,
+            onExpandedChange = { showAiInsights = it }
+        ) {
+            AiInsightsCard(
+                insightContext = aiInsightContext,
+                uiState = aiInsightsState,
+                onActionSelected = onAiInsightAction,
+                onRetry = onRetryAiInsight,
+                onClear = onClearAiInsight,
+                hasOpenTrade = openPosition != null
+            )
+        }
+        Spacer(modifier = Modifier.height(12.dp))
+        CollapsibleSection(
+            title = "Signal Console",
+            expanded = showSignalConsole,
+            onExpandedChange = { showSignalConsole = it }
+        ) {
+            SignalCard(
+                priceViewModel = priceViewModel,
+                recentPrices = recentPrices,
+                candles = candles,
+                dataQuality = dataQuality,
+                feedState = feedState,
+                selectedSymbol = selectedSymbol,
+                selectedTimeframe = selectedTimeframe,
+                selectedMode = selectedMode,
+                signalFilters = signalFilters,
+                analysisResult = analysisResult,
+                openPosition = openPosition,
+                riskPercentInput = riskPercentInput,
+                accountEquityUsd = accountEquityUsd
+            )
+        }
+    } else {
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Text("Signal Console and AI Insights are hidden.", fontWeight = FontWeight.Medium)
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    "Tap Analyse Market to generate a fresh signal, then these sections will appear.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CollapsibleSection(
+    title: String,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    content: @Composable () -> Unit
+) {
+    val darkTheme = androidx.compose.foundation.isSystemInDarkTheme()
+    val headerColor = if (darkTheme) {
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.98f)
+    } else {
+        MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)
+    }
+    Surface(
+        onClick = { onExpandedChange(!expanded) },
+        shape = RoundedCornerShape(8.dp),
+        color = headerColor,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = if (darkTheme) 0.65f else 0.35f)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .defaultMinSize(minHeight = 46.dp)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                title,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            IconButton(onClick = { onExpandedChange(!expanded) }) {
+                Icon(
+                    imageVector = if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                    contentDescription = if (expanded) "Collapse $title" else "Expand $title",
+                    tint = MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
+    }
+    if (expanded) {
+        Spacer(modifier = Modifier.height(8.dp))
+        content()
+    }
+}
+
+@Composable
+private fun HistoricalAndForecastCard(
+    candles: List<MarketCandle>,
+    analysisResult: AnalysisResult?,
+    timeframe: String,
+    pricePrecision: Int
+) {
+    var showRecentOhlc by rememberSaveable { mutableStateOf(false) }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("Historical Context", fontWeight = FontWeight.SemiBold)
+            Spacer(modifier = Modifier.height(8.dp))
+            if (candles.isEmpty()) {
+                Text(
+                    "No candle history yet. Connect and run analysis to populate context.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                return@Column
+            }
+
+            val recent = candles.takeLast(120)
+            val first = recent.firstOrNull()?.open ?: recent.first().close
+            val last = recent.last().close
+            val movePercent = if (first == 0.0) 0.0 else ((last - first) / first) * 100.0
+            val high = recent.maxOf { it.high }
+            val low = recent.minOf { it.low }
+            val biasColor = when (analysisResult?.bias) {
+                TradeBias.BULLISH -> MaterialTheme.colorScheme.primary
+                TradeBias.BEARISH -> MaterialTheme.colorScheme.error
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            }
+
+            Text(
+                "History (${recent.size} candles @ $timeframe): change ${formatPercentSigned(movePercent)}, range ${formatPrice(low, pricePrecision)} - ${formatPrice(high, pricePrecision)}",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                "Last close: ${formatPrice(last, pricePrecision)}",
+                color = biasColor,
+                fontSize = 12.sp
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            TextButton(onClick = { showRecentOhlc = !showRecentOhlc }) {
+                Text(if (showRecentOhlc) "Hide Recent OHLC" else "Show Recent OHLC")
+            }
+            if (showRecentOhlc) {
+                Spacer(modifier = Modifier.height(6.dp))
+                recent.takeLast(4).forEach { candle ->
+                    Text(
+                        "O ${formatPrice(candle.open, pricePrecision)} H ${formatPrice(candle.high, pricePrecision)} L ${formatPrice(candle.low, pricePrecision)} C ${formatPrice(candle.close, pricePrecision)}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                }
+            }
+        }
+    }
+}
+
+private fun buildProjectedCandles(
+    candles: List<MarketCandle>,
+    analysisResult: AnalysisResult,
+    steps: Int
+): List<MarketCandle> {
+    if (candles.isEmpty() || steps <= 0) return emptyList()
+    val recent = candles.takeLast(60)
+    val last = recent.last()
+    val avgRange = recent.map { (it.high - it.low).coerceAtLeast(0.00001) }.average()
+    val expectedMovePercent = analysisResult.forecastModelMetrics?.expectedMovePercent
+        ?: analysisResult.forecastResearch?.expectedMovePercent
+        ?: 0.3
+    val confidenceScale = (analysisResult.confidence / 100.0).coerceIn(0.2, 1.0)
+    val direction = when (analysisResult.bias) {
+        TradeBias.BULLISH -> 1.0
+        TradeBias.BEARISH -> -1.0
+        TradeBias.NEUTRAL -> 0.0
+    }
+    val neutralDriftScale = if (direction == 0.0) 0.3 else 1.0
+    val totalMove = last.close * (expectedMovePercent / 100.0) * confidenceScale * neutralDriftScale * direction
+    val perStepMove = totalMove / steps.toDouble()
+
+    val output = ArrayList<MarketCandle>(steps)
+    var prevClose = last.close
+    var epoch = last.epoch
+    repeat(steps) { step ->
+        val oscillation = kotlin.math.sin((step + 1) * 0.9) * (avgRange * 0.18)
+        val close = (prevClose + perStepMove + oscillation).coerceAtLeast(0.00001)
+        val open = prevClose
+        val wick = maxOf(avgRange * 0.5, kotlin.math.abs(close - open) * 0.8)
+        val high = maxOf(open, close) + (wick * 0.45)
+        val low = minOf(open, close) - (wick * 0.45)
+        epoch += 60L
+        output += MarketCandle(
+            epoch = epoch,
+            open = open,
+            high = high,
+            low = low,
+            close = close
+        )
+        prevClose = close
+    }
+    return output
+}
+
+@Composable
+private fun PredictionSummaryCard(
+    analysisResult: AnalysisResult,
+    selectedMode: ConfirmationMode,
+    candles: List<MarketCandle>,
+    pricePrecision: Int,
+    probabilityStats: HomeProbabilityStats?,
+    probabilityLoading: Boolean
+) {
+    val projected = remember(candles, analysisResult) { buildProjectedCandles(candles, analysisResult, steps = 8) }
+    val biasColor = when (analysisResult.bias) {
+        TradeBias.BULLISH -> MaterialTheme.colorScheme.primary
+        TradeBias.BEARISH -> MaterialTheme.colorScheme.error
+        TradeBias.NEUTRAL -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("Prediction Summary", fontWeight = FontWeight.SemiBold)
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                "${analysisResult.bias.label} • ${analysisResult.decision.label} • ${analysisResult.confidence}%",
+                color = biasColor,
+                fontWeight = FontWeight.Medium
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                analysisResult.summary,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            analysisResult.tradeSetup.entry?.let { entry ->
+                Text(
+                    "Entry ${formatPrice(entry, pricePrecision)}  |  TP ${analysisResult.tradeSetup.takeProfit?.let { formatPrice(it, pricePrecision) } ?: "-"}  |  SL ${analysisResult.tradeSetup.stopLoss?.let { formatPrice(it, pricePrecision) } ?: "-"}",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp
+                )
+            }
+            analysisResult.forecastModelMetrics?.let { model ->
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    "Model ${model.bias.label} • confidence ${(model.directionConfidence * 100).toInt()}% • dispersion ${(model.forecastDispersion * 100).toInt()}% • expected move ${"%.2f".format(model.expectedMovePercent)}%",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp
+                )
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+            Text("Projected Candles (T+1 ... T+8)", fontWeight = FontWeight.Medium, fontSize = 13.sp)
+            Spacer(modifier = Modifier.height(6.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                projected.forEachIndexed { index, candle ->
+                    val prev = if (index == 0) candles.lastOrNull()?.close ?: candle.open else projected[index - 1].close
+                    val bullish = candle.close >= prev
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (bullish) {
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.34f)
+                        } else {
+                            MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.30f)
+                        }
+                    ) {
+                        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+                            Text("T+${index + 1}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                formatPrice(candle.close, pricePrecision),
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+            Text("Mode Probability (${selectedMode.label})", fontWeight = FontWeight.Medium, fontSize = 13.sp)
+            Spacer(modifier = Modifier.height(4.dp))
+            when {
+                probabilityLoading -> Text(
+                    "Computing recent walk-forward probabilities...",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp
+                )
+                probabilityStats == null -> Text(
+                    "Not enough recent data to estimate TP-before-SL probability.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp
+                )
+                else -> {
+                    Text(
+                        "P(TP before SL): ${probabilityStats.pTpBeforeSl}%   •   P(SL before TP): ${probabilityStats.pSlBeforeTp}%",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp
+                    )
+                    Spacer(modifier = Modifier.height(3.dp))
+                    Text(
+                        "Signals ${probabilityStats.totalSignals}, resolved ${probabilityStats.resolvedSignals}, wins ${probabilityStats.wins}, losses ${probabilityStats.losses}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+
+            if (analysisResult.decision != TradeDecision.ELIGIBLE) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Text("Why Not Eligible", fontWeight = FontWeight.Medium, fontSize = 13.sp)
+                Spacer(modifier = Modifier.height(4.dp))
+                analysisResult.rejectionReasons.take(2).forEach { reason ->
+                    Text("• $reason", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                    Spacer(modifier = Modifier.height(2.dp))
+                }
+                val keyGates = setOf(
+                    "Higher-Timeframe Bias",
+                    "Confluence Gate",
+                    "Model Direction Agreement",
+                    "Model Direction Confidence",
+                    "Model Dispersion Check",
+                    "Model Target-First Potential"
+                )
+                val gateRows = analysisResult.confirmations.filter { it.name in keyGates }
+                if (gateRows.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        gateRows.forEach { gate ->
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (gate.passed) {
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.30f)
+                                } else {
+                                    MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.34f)
+                                }
+                            ) {
+                                Text(
+                                    "${if (gate.passed) "PASS" else "FAIL"} • ${gate.name}",
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun computeHomeProbabilityStats(
+    symbol: TradingSymbol,
+    timeframe: String,
+    mode: ConfirmationMode,
+    candles: List<MarketCandle>,
+    signalFilters: SignalFilterSettings,
+    horizonCandles: Int = 18
+): HomeProbabilityStats? {
+    if (candles.size < 140) return null
+    val startIndex = maxOf(100, candles.size - 220)
+    val lastSignalIndex = candles.lastIndex - horizonCandles
+    if (lastSignalIndex <= startIndex) return null
+
+    var totalSignals = 0
+    var wins = 0
+    var losses = 0
+    for (index in startIndex..lastSignalIndex) {
+        val history = candles.subList(0, index + 1)
+        val signal = AnalysisStub.analyze(
+            symbol = symbol,
+            timeframe = timeframe,
+            mode = mode,
+            candles = history,
+            candleStack = mapOf(timeframe to history),
+            recentPrices = history.map { it.close },
+            signalFilters = signalFilters,
+            closedTrades = emptyList(),
+            openPosition = null
+        )
+        val entry = signal.tradeSetup.entry ?: continue
+        val stopLoss = signal.tradeSetup.stopLoss ?: continue
+        val takeProfit = signal.tradeSetup.takeProfit ?: continue
+        if (signal.bias == TradeBias.NEUTRAL || signal.decision == TradeDecision.REJECT) continue
+
+        totalSignals += 1
+        val future = candles.subList(index + 1, (index + 1 + horizonCandles).coerceAtMost(candles.size))
+        when (evaluateWalkForwardOutcome(signal.bias, entry, stopLoss, takeProfit, future).first) {
+            PredictionOutcome.WIN -> wins += 1
+            PredictionOutcome.LOSS -> losses += 1
+            else -> Unit
+        }
+    }
+    if (totalSignals == 0) return null
+    val resolved = wins + losses
+    val pTp = if (resolved == 0) 0 else ((wins.toDouble() / resolved) * 100.0).toInt()
+    val pSl = if (resolved == 0) 0 else ((losses.toDouble() / resolved) * 100.0).toInt()
+    return HomeProbabilityStats(
+        mode = mode,
+        totalSignals = totalSignals,
+        resolvedSignals = resolved,
+        wins = wins,
+        losses = losses,
+        pTpBeforeSl = pTp,
+        pSlBeforeTp = pSl
     )
 }
 
@@ -1058,6 +1636,10 @@ private fun SignalCard(
                     ForecastResearchCard(research)
                     Spacer(modifier = Modifier.height(12.dp))
                 }
+                analysisResult.forecastModelMetrics?.let { modelMetrics ->
+                    ForecastModelCard(modelMetrics)
+                    Spacer(modifier = Modifier.height(12.dp))
+                }
                 ProcessFlowCard(
                     analysisResult = analysisResult,
                     selectedSymbol = selectedSymbol
@@ -1136,6 +1718,40 @@ private fun ForecastResearchCard(
     }
 }
 
+@Composable
+private fun ForecastModelCard(
+    modelMetrics: ForecastModelMetrics
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("Sequence Model", fontWeight = FontWeight.SemiBold)
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                "Bias: ${modelMetrics.bias.label} (${modelMetrics.modelName})",
+                color = when (modelMetrics.bias) {
+                    TradeBias.BULLISH -> MaterialTheme.colorScheme.primary
+                    TradeBias.BEARISH -> MaterialTheme.colorScheme.error
+                    TradeBias.NEUTRAL -> MaterialTheme.colorScheme.onSurfaceVariant
+                }
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text("Bullish probability: ${(modelMetrics.bullishProbability * 100.0).toInt()}%")
+            Spacer(modifier = Modifier.height(4.dp))
+            Text("Bearish probability: ${(modelMetrics.bearishProbability * 100.0).toInt()}%")
+            Spacer(modifier = Modifier.height(4.dp))
+            Text("Direction confidence: ${(modelMetrics.directionConfidence * 100.0).toInt()}%")
+            Spacer(modifier = Modifier.height(4.dp))
+            Text("Forecast dispersion: ${(modelMetrics.forecastDispersion * 100.0).toInt()}%")
+            Spacer(modifier = Modifier.height(4.dp))
+            Text("Target-before-stop: ${(modelMetrics.targetBeforeStopScore * 100.0).toInt()}%")
+            Spacer(modifier = Modifier.height(4.dp))
+            Text("Expected move: ${"%.2f".format(modelMetrics.expectedMovePercent)}%")
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(modelMetrics.summary, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
 private fun confirmationBypassReason(
     confirmationName: String,
     signalFilters: SignalFilterSettings
@@ -1147,6 +1763,13 @@ private fun confirmationBypassReason(
             "setup-state gate disabled in Settings"
         confirmationName == "Confluence Gate" && !signalFilters.requireConfluence ->
             "confluence gate disabled in Settings"
+        confirmationName in setOf(
+            "Model Direction Agreement",
+            "Model Direction Confidence",
+            "Model Dispersion Check",
+            "Model Target-First Potential"
+        ) && !signalFilters.requireForecastSupport ->
+            "forecast gate disabled in Settings"
         confirmationName in setOf(
             "Trend Structure",
             "Momentum",
@@ -2724,6 +3347,10 @@ private fun positionPnlUsd(position: TradePosition, currentPrice: Double?): Doub
 
 private fun formatCurrency(value: Double): String = "$${"%.2f".format(value)}"
 
+private fun formatPrice(value: Double, precision: Int): String {
+    return "%.${precision}f".format(value)
+}
+
 private fun formatCurrencySigned(value: Double): String {
     return if (value >= 0.0) "+$${"%.2f".format(value)}" else "-$${"%.2f".format(kotlin.math.abs(value))}"
 }
@@ -2751,6 +3378,715 @@ private fun formatChartEpochLabel(epochSeconds: Long?, fallback: String): String
     return DateTimeFormatter.ofPattern("dd MMM HH:mm")
         .withZone(ZoneId.systemDefault())
         .format(Instant.ofEpochSecond(epochSeconds))
+}
+
+@Composable
+private fun ValidationPanel(
+    selectedSymbol: TradingSymbol,
+    selectedTimeframe: String,
+    candles: List<MarketCandle>,
+    signalFilters: SignalFilterSettings
+) {
+    val darkTheme = androidx.compose.foundation.isSystemInDarkTheme()
+    val primaryTextColor = if (darkTheme) Color(0xFFF3F4F6) else MaterialTheme.colorScheme.onSurface
+    val secondaryTextColor = if (darkTheme) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+    val scope = rememberCoroutineScope()
+    var selectedMode by rememberSaveable { mutableStateOf(ConfirmationMode.MODERATE) }
+    var runningOneShot by remember { mutableStateOf(false) }
+    var runningWalkForward by remember { mutableStateOf(false) }
+    var runningScenarioSuite by remember { mutableStateOf(false) }
+    var oneShotResult by remember { mutableStateOf<OneShotValidationResult?>(null) }
+    var walkForwardResult by remember { mutableStateOf<WalkForwardRunResult?>(null) }
+    var selectedWalkForwardRow by remember { mutableStateOf<WalkForwardPredictionRow?>(null) }
+    var lastWalkForwardRunLabel by remember { mutableStateOf("Not run yet") }
+    var walkForwardRunCounter by remember { mutableStateOf(0) }
+    var scenarioResults by remember { mutableStateOf<List<ValidationRunResult>>(emptyList()) }
+    val scenarioTotal = scenarioResults.size
+    val scenarioPassed = scenarioResults.count { it.passed }
+    val recentPrices = remember(candles) { candles.map { it.close } }
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("In-App Analysis Validation", fontWeight = FontWeight.SemiBold)
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                "Validate one-by-one on current data and run walk-forward on recent history using AnalysisStub.",
+                color = secondaryTextColor
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                "Symbol: ${selectedSymbol.code} • TF: $selectedTimeframe • Candles: ${candles.size}",
+                color = secondaryTextColor,
+                fontSize = 12.sp
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                "Using current signal gates: ${signalFilters.summary(maxItems = 4)}",
+                color = secondaryTextColor,
+                fontSize = 12.sp
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            DropdownField(
+                label = "Validation Mode",
+                value = selectedMode.label,
+                options = ConfirmationMode.entries.map { it.label },
+                onSelect = { label ->
+                    selectedMode = ConfirmationMode.entries.first { it.label == label }
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Button(
+                onClick = {
+                    scope.launch {
+                        runningOneShot = true
+                        walkForwardResult = null
+                        selectedWalkForwardRow = null
+                        scenarioResults = emptyList()
+                        oneShotResult = null
+                        val oneShot = withContext(Dispatchers.Default) {
+                            OneShotValidationResult(
+                                mode = selectedMode,
+                                timeframe = selectedTimeframe,
+                                candlesUsed = candles.size,
+                                result = AnalysisStub.analyze(
+                                    symbol = selectedSymbol,
+                                    timeframe = selectedTimeframe,
+                                    mode = selectedMode,
+                                    candles = candles,
+                                    candleStack = mapOf(selectedTimeframe to candles),
+                                    recentPrices = recentPrices,
+                                    signalFilters = signalFilters,
+                                    closedTrades = emptyList(),
+                                    openPosition = null
+                                )
+                            )
+                        }
+                        oneShotResult = oneShot
+                        runningOneShot = false
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !runningOneShot && candles.size >= 50
+            ) {
+                if (runningOneShot) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Running One-By-One Check")
+                } else {
+                    Text("Run One On Current Data")
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = {
+                    scope.launch {
+                        runningWalkForward = true
+                        oneShotResult = null
+                        scenarioResults = emptyList()
+                        walkForwardResult = null
+                        selectedWalkForwardRow = null
+                        val walkForward = withContext(Dispatchers.Default) {
+                            runWalkForwardValidation(
+                                symbol = selectedSymbol,
+                                timeframe = selectedTimeframe,
+                                candles = candles,
+                                signalFilters = signalFilters
+                            )
+                        }
+                        walkForwardResult = walkForward
+                        selectedWalkForwardRow = walkForward.rows.firstOrNull()
+                        lastWalkForwardRunLabel = currentTimeLabel()
+                        walkForwardRunCounter += 1
+                        runningWalkForward = false
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !runningWalkForward && candles.size >= 140
+            ) {
+                if (runningWalkForward) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Running Walk-Forward")
+                } else {
+                    Text("Run Walk-Forward (All Modes)")
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = {
+                    scope.launch {
+                        runningScenarioSuite = true
+                        oneShotResult = null
+                        walkForwardResult = null
+                        selectedWalkForwardRow = null
+                        scenarioResults = emptyList()
+                        val results = withContext(Dispatchers.Default) {
+                            runValidationSuite(
+                                symbol = selectedSymbol,
+                                signalFilters = signalFilters
+                            )
+                        }
+                        scenarioResults = results
+                        runningScenarioSuite = false
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !runningScenarioSuite
+            ) {
+                Text("Run Synthetic Scenario Suite")
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            TextButton(
+                onClick = {
+                    oneShotResult = null
+                    walkForwardResult = null
+                    selectedWalkForwardRow = null
+                    scenarioResults = emptyList()
+                    lastWalkForwardRunLabel = "Not run yet"
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Clear Validation Output")
+            }
+            if (scenarioResults.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    "Synthetic suite: $scenarioPassed / $scenarioTotal checks passed",
+                    color = if (scenarioPassed == scenarioTotal) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+        }
+    }
+
+    if (oneShotResult != null) {
+        Spacer(modifier = Modifier.height(12.dp))
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text("One-By-One Result (${oneShotResult!!.mode.label})", fontWeight = FontWeight.SemiBold)
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    "Bias: ${oneShotResult!!.result.bias.label} | Decision: ${oneShotResult!!.result.decision.label} | Confidence: ${oneShotResult!!.result.confidence}%",
+                    color = secondaryTextColor
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    oneShotResult!!.result.summary,
+                    color = secondaryTextColor,
+                    fontSize = 12.sp
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    "Next trigger: ${oneShotResult!!.result.nextTrigger}",
+                    color = secondaryTextColor,
+                    fontSize = 12.sp
+                )
+                oneShotResult!!.result.rejectionReasons.firstOrNull()?.let { reason ->
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "Top blocker: $reason",
+                        color = secondaryTextColor,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        }
+    }
+
+    if (walkForwardResult != null) {
+        Spacer(modifier = Modifier.height(12.dp))
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text("Walk-Forward Scorecard", fontWeight = FontWeight.SemiBold, color = primaryTextColor)
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    "Run #$walkForwardRunCounter • Last run: $lastWalkForwardRunLabel • Dataset: ${walkForwardResult!!.datasetSize} candles • Horizon: ${walkForwardResult!!.horizonCandles} candles",
+                    color = secondaryTextColor,
+                    fontSize = 12.sp
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                walkForwardResult!!.modeScores.forEach { score ->
+                    Text(
+                        "${score.mode.label}: signals ${score.totalSignals}, triggered ${score.triggeredSignals}, W ${score.wins}, L ${score.losses}, no-hit ${score.noHit}, not-triggered ${score.notTriggered}, resolved WR ${score.winRateResolved}%",
+                        color = secondaryTextColor,
+                        fontSize = 12.sp
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                }
+            }
+        }
+        if (walkForwardResult!!.rows.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(12.dp))
+            Text("Predictions (tap to inspect)", fontWeight = FontWeight.SemiBold, color = primaryTextColor)
+            Spacer(modifier = Modifier.height(8.dp))
+            walkForwardResult!!.rows.take(40).forEach { row ->
+                Surface(
+                    onClick = { selectedWalkForwardRow = row },
+                    shape = RoundedCornerShape(8.dp),
+                    tonalElevation = if (selectedWalkForwardRow == row) 2.dp else 0.dp,
+                    color = when (row.outcome) {
+                        PredictionOutcome.WIN -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f)
+                        PredictionOutcome.LOSS -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.28f)
+                        else -> MaterialTheme.colorScheme.surface
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Text(
+                            "${row.mode.label} • ${row.bias.label} • ${row.outcome.label} • ${row.decision.label}",
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 13.sp,
+                            color = primaryTextColor
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            "Signal @ ${formatChartEpochLabel(row.signalEpoch, fallback = row.signalIndex.toString())} • Conf ${row.confidence}%",
+                            color = secondaryTextColor,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+            }
+            selectedWalkForwardRow?.let { row ->
+                Spacer(modifier = Modifier.height(10.dp))
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text("Prediction Detail", fontWeight = FontWeight.SemiBold, color = primaryTextColor)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            "${row.mode.label} • ${row.bias.label} • ${row.outcome.label}",
+                            color = secondaryTextColor,
+                            fontSize = 12.sp
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            "Entry ${"%.5f".format(row.entry)} | SL ${"%.5f".format(row.stopLoss)} | TP ${"%.5f".format(row.takeProfit)}",
+                            color = secondaryTextColor,
+                            fontSize = 12.sp
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            row.outcomeReason,
+                            color = secondaryTextColor,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    if (scenarioResults.isNotEmpty()) {
+        Spacer(modifier = Modifier.height(12.dp))
+        scenarioResults.forEach { row ->
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (row.passed) {
+                        MaterialTheme.colorScheme.surface
+                    } else {
+                        MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.24f)
+                    }
+                )
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text(
+                        "${if (row.passed) "PASS" else "FAIL"} • ${row.scenarioName} • ${row.mode.label}",
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (row.passed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "Expected: ${row.expectation.label} | Actual: ${row.actualBias.label}, ${row.decision.label}, ${row.confidence}%",
+                        color = secondaryTextColor,
+                        fontSize = 12.sp
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "Model: ${row.modelBias?.label ?: "-"} (${row.modelConfidence?.let { "$it%" } ?: "-"})",
+                        color = secondaryTextColor,
+                        fontSize = 12.sp
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "Confirmations: ${row.passedConfirmations}/${row.totalConfirmations}",
+                        color = secondaryTextColor,
+                        fontSize = 12.sp
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(row.notes, color = secondaryTextColor, fontSize = 12.sp)
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+    }
+}
+
+private fun runWalkForwardValidation(
+    symbol: TradingSymbol,
+    timeframe: String,
+    candles: List<MarketCandle>,
+    signalFilters: SignalFilterSettings,
+    horizonCandles: Int = 18
+): WalkForwardRunResult {
+    if (candles.size < 140) {
+        return WalkForwardRunResult(
+            datasetSize = candles.size,
+            horizonCandles = horizonCandles,
+            modeScores = ConfirmationMode.entries.map {
+                WalkForwardModeScore(it, 0, 0, 0, 0, 0, 0, 0)
+            },
+            rows = emptyList()
+        )
+    }
+    val startIndex = 100
+    val lastSignalIndex = candles.lastIndex - horizonCandles
+    if (lastSignalIndex <= startIndex) {
+        return WalkForwardRunResult(
+            datasetSize = candles.size,
+            horizonCandles = horizonCandles,
+            modeScores = ConfirmationMode.entries.map {
+                WalkForwardModeScore(it, 0, 0, 0, 0, 0, 0, 0)
+            },
+            rows = emptyList()
+        )
+    }
+
+    val rows = mutableListOf<WalkForwardPredictionRow>()
+    ConfirmationMode.entries.forEach { mode ->
+        for (index in startIndex..lastSignalIndex) {
+            val history = candles.subList(0, index + 1)
+            val signalResult = AnalysisStub.analyze(
+                symbol = symbol,
+                timeframe = timeframe,
+                mode = mode,
+                candles = history,
+                candleStack = mapOf(timeframe to history),
+                recentPrices = history.map { it.close },
+                signalFilters = signalFilters,
+                closedTrades = emptyList(),
+                openPosition = null
+            )
+            val entry = signalResult.tradeSetup.entry
+            val stopLoss = signalResult.tradeSetup.stopLoss
+            val takeProfit = signalResult.tradeSetup.takeProfit
+            if (signalResult.bias == TradeBias.NEUTRAL || signalResult.decision == TradeDecision.REJECT) continue
+            if (entry == null || stopLoss == null || takeProfit == null) continue
+
+            val future = candles.subList(index + 1, (index + 1 + horizonCandles).coerceAtMost(candles.size))
+            val outcome = evaluateWalkForwardOutcome(
+                bias = signalResult.bias,
+                entry = entry,
+                stopLoss = stopLoss,
+                takeProfit = takeProfit,
+                future = future
+            )
+            rows += WalkForwardPredictionRow(
+                mode = mode,
+                signalEpoch = history.last().epoch,
+                signalIndex = index,
+                bias = signalResult.bias,
+                decision = signalResult.decision,
+                confidence = signalResult.confidence,
+                entry = entry,
+                stopLoss = stopLoss,
+                takeProfit = takeProfit,
+                outcome = outcome.first,
+                outcomeReason = outcome.second
+            )
+        }
+    }
+
+    val modeScores = ConfirmationMode.entries.map { mode ->
+        val modeRows = rows.filter { it.mode == mode }
+        val wins = modeRows.count { it.outcome == PredictionOutcome.WIN }
+        val losses = modeRows.count { it.outcome == PredictionOutcome.LOSS }
+        val noHit = modeRows.count { it.outcome == PredictionOutcome.NO_HIT }
+        val notTriggered = modeRows.count { it.outcome == PredictionOutcome.NOT_TRIGGERED }
+        val triggered = wins + losses + noHit
+        val resolved = wins + losses
+        val winRate = if (resolved == 0) 0 else ((wins.toDouble() / resolved) * 100.0).toInt()
+        WalkForwardModeScore(
+            mode = mode,
+            totalSignals = modeRows.size,
+            triggeredSignals = triggered,
+            wins = wins,
+            losses = losses,
+            noHit = noHit,
+            notTriggered = notTriggered,
+            winRateResolved = winRate
+        )
+    }
+
+    return WalkForwardRunResult(
+        datasetSize = candles.size,
+        horizonCandles = horizonCandles,
+        modeScores = modeScores,
+        rows = rows.sortedByDescending { it.signalEpoch }
+    )
+}
+
+private fun evaluateWalkForwardOutcome(
+    bias: TradeBias,
+    entry: Double,
+    stopLoss: Double,
+    takeProfit: Double,
+    future: List<MarketCandle>
+): Pair<PredictionOutcome, String> {
+    val triggerIndex = future.indexOfFirst { candle -> candle.low <= entry && candle.high >= entry }
+    if (triggerIndex < 0) {
+        return PredictionOutcome.NOT_TRIGGERED to "Entry was never touched within the evaluation horizon."
+    }
+    for (index in triggerIndex until future.size) {
+        val candle = future[index]
+        val stopHit = candle.low <= stopLoss && candle.high >= stopLoss
+        val targetHit = candle.low <= takeProfit && candle.high >= takeProfit
+        if (stopHit && targetHit) {
+            return PredictionOutcome.LOSS to "Stop and target were both touched in the same candle; counted as loss."
+        }
+        when (bias) {
+            TradeBias.BULLISH -> {
+                if (targetHit) return PredictionOutcome.WIN to "Target was hit before stop."
+                if (stopHit) return PredictionOutcome.LOSS to "Stop was hit before target."
+            }
+            TradeBias.BEARISH -> {
+                if (targetHit) return PredictionOutcome.WIN to "Target was hit before stop."
+                if (stopHit) return PredictionOutcome.LOSS to "Stop was hit before target."
+            }
+            TradeBias.NEUTRAL -> return PredictionOutcome.NO_HIT to "Neutral bias has no directional outcome."
+        }
+    }
+    return PredictionOutcome.NO_HIT to "Entry was triggered, but neither target nor stop was reached in horizon."
+}
+
+private fun runValidationSuite(
+    symbol: TradingSymbol,
+    signalFilters: SignalFilterSettings
+): List<ValidationRunResult> {
+    val scenarios = buildValidationScenarios()
+    val runs = mutableListOf<ValidationRunResult>()
+    ConfirmationMode.entries.forEach { mode ->
+        scenarios.forEach { scenario ->
+            val result = AnalysisStub.analyze(
+                symbol = symbol,
+                timeframe = scenario.timeframe,
+                mode = mode,
+                candles = scenario.candles,
+                candleStack = mapOf(scenario.timeframe to scenario.candles),
+                recentPrices = scenario.candles.map { it.close },
+                signalFilters = signalFilters,
+                closedTrades = emptyList(),
+                openPosition = null
+            )
+            val passedConfirmations = result.confirmations.count { it.passed }
+            val pass = validationPassesExpectation(scenario.expectation, mode, result)
+            val reason = if (pass) {
+                "Expectation met."
+            } else {
+                result.rejectionReasons.firstOrNull() ?: "Expectation failed with no explicit rejection reason."
+            }
+            runs += ValidationRunResult(
+                scenarioName = scenario.name,
+                mode = mode,
+                expectation = scenario.expectation,
+                passed = pass,
+                actualBias = result.bias,
+                decision = result.decision,
+                confidence = result.confidence,
+                modelBias = result.forecastModelMetrics?.bias,
+                modelConfidence = result.forecastModelMetrics?.let { (it.directionConfidence * 100.0).toInt() },
+                passedConfirmations = passedConfirmations,
+                totalConfirmations = result.confirmations.size,
+                notes = "${scenario.description} $reason"
+            )
+        }
+    }
+    return runs
+}
+
+private fun validationPassesExpectation(
+    expectation: ValidationExpectation,
+    mode: ConfirmationMode,
+    result: AnalysisResult
+): Boolean {
+    val strictMode = mode == ConfirmationMode.CONSERVATIVE || mode == ConfirmationMode.MODERATE
+    val modelConfidence = result.forecastModelMetrics?.directionConfidence ?: 0.0
+    return when (expectation) {
+        ValidationExpectation.LEAN_BULLISH -> {
+            if (strictMode) {
+                result.bias == TradeBias.BULLISH &&
+                    result.decision != TradeDecision.REJECT &&
+                    modelConfidence >= 0.35
+            } else {
+                result.bias != TradeBias.BEARISH &&
+                    result.decision != TradeDecision.REJECT
+            }
+        }
+        ValidationExpectation.LEAN_BEARISH -> {
+            if (strictMode) {
+                result.bias == TradeBias.BEARISH &&
+                    result.decision != TradeDecision.REJECT &&
+                    modelConfidence >= 0.35
+            } else {
+                result.bias != TradeBias.BULLISH &&
+                    result.decision != TradeDecision.REJECT
+            }
+        }
+        ValidationExpectation.STAY_DEFENSIVE -> {
+            if (strictMode) {
+                result.decision == TradeDecision.REJECT || result.bias == TradeBias.NEUTRAL
+            } else {
+                result.decision != TradeDecision.ELIGIBLE &&
+                    (result.bias == TradeBias.NEUTRAL || modelConfidence < 0.55)
+            }
+        }
+    }
+}
+
+private fun buildValidationScenarios(): List<ValidationScenario> {
+    return listOf(
+        ValidationScenario(
+            name = "Strong Uptrend",
+            timeframe = "15m",
+            description = "Rising structure with pullbacks should not lean bearish.",
+            expectation = ValidationExpectation.LEAN_BULLISH,
+            candles = syntheticCandles(
+                count = 280,
+                start = 100.0,
+                drift = 0.28,
+                wave = 0.22,
+                noise = 0.05
+            )
+        ),
+        ValidationScenario(
+            name = "Strong Downtrend",
+            timeframe = "15m",
+            description = "Falling structure with weak rebounds should not lean bullish.",
+            expectation = ValidationExpectation.LEAN_BEARISH,
+            candles = syntheticCandles(
+                count = 280,
+                start = 100.0,
+                drift = -0.28,
+                wave = 0.22,
+                noise = 0.05
+            )
+        ),
+        ValidationScenario(
+            name = "Range Compression",
+            timeframe = "15m",
+            description = "Flat range should avoid immediate eligibility until breakout structure appears.",
+            expectation = ValidationExpectation.STAY_DEFENSIVE,
+            candles = syntheticCandles(
+                count = 280,
+                start = 100.0,
+                drift = 0.0,
+                wave = 0.08,
+                noise = 0.03
+            )
+        ),
+        ValidationScenario(
+            name = "Noisy Whipsaw",
+            timeframe = "15m",
+            description = "High-noise alternating swings should remain defensive.",
+            expectation = ValidationExpectation.STAY_DEFENSIVE,
+            candles = syntheticCandles(
+                count = 280,
+                start = 100.0,
+                drift = 0.0,
+                wave = 0.55,
+                noise = 0.35
+            )
+        ),
+        ValidationScenario(
+            name = "Late Trend Exhaustion",
+            timeframe = "15m",
+            description = "Steep move followed by unstable reversal pressure should remain defensive in strict modes.",
+            expectation = ValidationExpectation.STAY_DEFENSIVE,
+            candles = syntheticCandlesWithExhaustion(
+                count = 280,
+                start = 100.0
+            )
+        )
+    )
+}
+
+private fun syntheticCandles(
+    count: Int,
+    start: Double,
+    drift: Double,
+    wave: Double,
+    noise: Double
+): List<MarketCandle> {
+    val candles = ArrayList<MarketCandle>(count)
+    var price = start
+    val startEpoch = 1_700_000_000L
+    repeat(count) { index ->
+        val cycle = kotlin.math.sin(index / 8.0) * wave
+        val jagged = kotlin.math.sin(index * 1.9) * noise
+        val step = drift + cycle + jagged
+        val close = (price + step).coerceAtLeast(0.1)
+        val open = price
+        val wick = (kotlin.math.abs(step) * 0.35).coerceAtLeast(0.04)
+        val high = maxOf(open, close) + wick
+        val low = minOf(open, close) - wick
+        candles += MarketCandle(
+            epoch = startEpoch + (index * 60L),
+            open = open,
+            high = high,
+            low = low,
+            close = close
+        )
+        price = close
+    }
+    return candles
+}
+
+private fun syntheticCandlesWithExhaustion(
+    count: Int,
+    start: Double
+): List<MarketCandle> {
+    val candles = ArrayList<MarketCandle>(count)
+    var price = start
+    val startEpoch = 1_700_200_000L
+    repeat(count) { index ->
+        val drift = when {
+            index < (count * 0.55).toInt() -> 0.34
+            index < (count * 0.75).toInt() -> 0.10
+            else -> -0.22
+        }
+        val noise = when {
+            index < (count * 0.55).toInt() -> 0.03
+            index < (count * 0.75).toInt() -> 0.18
+            else -> 0.32
+        }
+        val cycle = kotlin.math.sin(index / 5.0) * 0.24
+        val jagged = kotlin.math.sin(index * 2.3) * noise
+        val step = drift + cycle + jagged
+        val close = (price + step).coerceAtLeast(0.1)
+        val open = price
+        val wick = (kotlin.math.abs(step) * 0.45).coerceAtLeast(0.05)
+        val high = maxOf(open, close) + wick
+        val low = minOf(open, close) - wick
+        candles += MarketCandle(
+            epoch = startEpoch + (index * 60L),
+            open = open,
+            high = high,
+            low = low,
+            close = close
+        )
+        price = close
+    }
+    return candles
 }
 
 @Composable
