@@ -180,26 +180,26 @@ private enum class AppTab(
     HOME(
         label = "Home",
         icon = Icons.Outlined.Home,
-        title = "Signal Home",
-        subtitle = "Live setup scoring tuned for fast directional reads."
+        title = "Gold Signal Home",
+        subtitle = "Live XAUUSD setup scoring tuned for session-aware directional reads."
     ),
     CHARTS(
         label = "Charts",
         icon = Icons.AutoMirrored.Outlined.ShowChart,
-        title = "Charts",
-        subtitle = "Full chart view with timeframe access and live feed context."
+        title = "Gold Charts",
+        subtitle = "Gold-only chart view with timeframe access and live feed context."
     ),
     VALIDATION(
         label = "Validation",
         icon = Icons.Outlined.CallSplit,
         title = "Validation",
-        subtitle = "Run deterministic scenario checks against the same analysis engine."
+        subtitle = "Run walk-forward and deterministic checks on the gold analysis engine."
     ),
     SETTINGS(
         label = "Settings",
         icon = Icons.Outlined.Settings,
-        title = "Workspace",
-        subtitle = "Adjust filtering, execution discipline, and display behavior."
+        title = "Gold Workspace",
+        subtitle = "Adjust filtering, execution discipline, and display behavior for XAUUSD."
     )
 }
 

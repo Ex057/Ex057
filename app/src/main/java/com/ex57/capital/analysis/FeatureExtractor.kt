@@ -1,6 +1,8 @@
 package com.ex57.capital.analysis
 
 import kotlin.math.abs
+import java.time.Instant
+import java.time.ZoneOffset
 
 internal object FeatureExtractor {
     fun extract(input: AnalysisInput): FeatureExtractionResult? {
@@ -91,6 +93,7 @@ internal object FeatureExtractor {
             candleStack = input.candleStack,
             fallbackCandles = sourceCandles
         )
+        val sessionContext = buildSessionContext(sourceCandles.lastOrNull()?.epoch)
 
         return FeatureExtractionResult(
             prices = prices,
@@ -127,7 +130,36 @@ internal object FeatureExtractor {
             macdHistogram = macdHistogram,
             bollingerPosition = bollingerPosition,
             bullishIndicatorScore = bullishIndicatorScore,
-            bearishIndicatorScore = bearishIndicatorScore
+            bearishIndicatorScore = bearishIndicatorScore,
+            sessionContext = sessionContext
+        )
+    }
+
+    private fun buildSessionContext(lastEpochSeconds: Long?): SessionContext {
+        val hourUtc = lastEpochSeconds?.let {
+            Instant.ofEpochSecond(it).atOffset(ZoneOffset.UTC).hour
+        } ?: Instant.now().atOffset(ZoneOffset.UTC).hour
+        val isLondonOpen = hourUtc in 7..9
+        val isLondonNyOverlap = hourUtc in 13..16
+        val isQuietSession = hourUtc in 0..5 || hourUtc in 21..23
+        val sessionScore = when {
+            isLondonNyOverlap -> 1.0
+            isLondonOpen -> 0.65
+            isQuietSession -> 0.2
+            else -> 0.45
+        }
+        val sessionLabel = when {
+            isLondonNyOverlap -> "London-New York overlap"
+            isLondonOpen -> "London open"
+            isQuietSession -> "Quiet session"
+            else -> "Transition session"
+        }
+        return SessionContext(
+            sessionLabel = sessionLabel,
+            isLondonOpen = isLondonOpen,
+            isLondonNyOverlap = isLondonNyOverlap,
+            isQuietSession = isQuietSession,
+            sessionScore = sessionScore
         )
     }
 

@@ -9,7 +9,7 @@ class AiPromptComposer(
 ) {
     fun compose(request: AiInsightRequest, provider: AiProvider): AiComposedPrompt {
         val systemPrompt = buildString {
-            appendLine("You are an AI insights layer for a trading app.")
+            appendLine("You are an AI insights layer for a gold (XAUUSD) trading app.")
             appendLine("You do not place trades or guarantee outcomes.")
             appendLine("Use only the structured context provided.")
             appendLine("Never invent candles, indicators, prices, or broker data.")
@@ -17,7 +17,9 @@ class AiPromptComposer(
             appendLine("State uncertainty when evidence is mixed.")
             appendLine("Never guarantee outcomes or promise accuracy.")
             appendLine("Think like a discretionary trader: context -> bias -> setup -> trigger -> invalidation -> risk.")
+            appendLine("Prioritize gold-specific drivers: session timing, dollar/real-yield pressure proxies, and breakout quality.")
             appendLine("Prefer concrete market structure language over generic finance text.")
+            appendLine("Outside London or London-New York overlap, lower confidence unless momentum is exceptional.")
             appendLine("If evidence is weak, explicitly recommend wait/no trade and what must change.")
             appendLine("Be concise and actionable.")
             appendLine("Return valid JSON only with keys: title, summary, bullets, caution.")

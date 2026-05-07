@@ -141,7 +141,12 @@ internal object RiskManager {
         val baseRisk = (
             averageStep * (2.0 + (noiseRatio / noiseCeiling).coerceAtMost(1.2))
             ).coerceAtLeast(maxOf(last * 0.0015, spreadBuffer * 2.5))
-        val rewardMultiplier = AnalysisSupport.configFor(mode).rewardMultiplier
+        val baseRewardMultiplier = AnalysisSupport.configFor(mode).rewardMultiplier
+        val rewardMultiplier = if (symbol.code == "XAUUSD") {
+            baseRewardMultiplier.coerceIn(2.5, 3.0)
+        } else {
+            baseRewardMultiplier
+        }
         val setupAdjustment = if (setupType == SetupType.BREAKOUT) 1.15 else 1.0
 
         return when (bias) {

@@ -60,7 +60,16 @@ internal data class FeatureExtractionResult(
     val macdHistogram: Double,
     val bollingerPosition: Double,
     val bullishIndicatorScore: Double,
-    val bearishIndicatorScore: Double
+    val bearishIndicatorScore: Double,
+    val sessionContext: SessionContext
+)
+
+internal data class SessionContext(
+    val sessionLabel: String,
+    val isLondonOpen: Boolean,
+    val isLondonNyOverlap: Boolean,
+    val isQuietSession: Boolean,
+    val sessionScore: Double
 )
 
 internal data class StrategyEvaluation(

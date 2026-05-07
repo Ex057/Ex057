@@ -10,6 +10,9 @@ import com.ex57.capital.model.TradeBias
 import com.ex57.capital.model.TradeDecision
 import com.ex57.capital.model.TradePerformanceFeedback
 import com.ex57.capital.model.TradingSymbol
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneOffset
 import kotlin.math.abs
 
 internal object StrategyEvaluator {
@@ -185,6 +188,15 @@ internal object StrategyEvaluator {
         val bullishModelSupport = forecastModelSupportScore(forecastModelMetrics, bullish = true)
         val bearishModelSupport = forecastModelSupportScore(forecastModelMetrics, bullish = false)
         val modelDispersionPenalty = forecastModelMetrics.forecastDispersion * 0.55
+        val sessionBonus = features.sessionContext.sessionScore * 0.35
+        val sessionPenalty = if (features.sessionContext.isQuietSession) 0.28 else 0.0
+        val todayTradeStats = buildTodayTradeStats(
+            symbolCode = symbol.code,
+            timeframe = input.timeframe,
+            closedTrades = input.closedTrades
+        )
+        val dailyLossStopActive = todayTradeStats.lossesToday >= 2
+        val dailyTradeCapReached = todayTradeStats.tradesToday >= 2
 
         val candidateScores = listOf(
             CandidateSetup(
@@ -197,6 +209,8 @@ internal object StrategyEvaluator {
                     (confluenceMetaScore * 1.1) +
                     (bullishForecastBonus * 0.9) +
                     (bullishModelSupport * 0.9) -
+                    sessionPenalty +
+                    sessionBonus -
                     riskPenalty -
                     modelDispersionPenalty
             ),
@@ -210,6 +224,8 @@ internal object StrategyEvaluator {
                     (confluenceMetaScore * 1.1) +
                     (bearishForecastBonus * 0.9) +
                     (bearishModelSupport * 0.9) -
+                    sessionPenalty +
+                    sessionBonus -
                     riskPenalty -
                     modelDispersionPenalty
             ),
@@ -223,6 +239,8 @@ internal object StrategyEvaluator {
                     (confluenceMetaScore * 1.0) +
                     (bullishForecastBonus * 0.9) +
                     (bullishModelSupport * 0.85) -
+                    sessionPenalty +
+                    sessionBonus -
                     riskPenalty -
                     modelDispersionPenalty
             ),
@@ -236,6 +254,8 @@ internal object StrategyEvaluator {
                     (confluenceMetaScore * 1.0) +
                     (bearishForecastBonus * 0.9) +
                     (bearishModelSupport * 0.85) -
+                    sessionPenalty +
+                    sessionBonus -
                     riskPenalty -
                     modelDispersionPenalty
             )
@@ -312,7 +332,7 @@ internal object StrategyEvaluator {
             ConfirmationMode.MODERATE -> filterSettings.enforceHardBlocks && ((severeNoise && severeNews) || forecastHardConflict || modelHardConflict)
             ConfirmationMode.AGGRESSIVE -> filterSettings.enforceHardBlocks && severeNoise && severeNews && confluenceMetaScore < 0.4
             ConfirmationMode.LENIENT -> filterSettings.enforceHardBlocks && severeNoise && severeNews && topDownDirectionalGate < 0.25
-        }
+        } || (filterSettings.enforceHardBlocks && dailyLossStopActive)
         val forecastThreshold = when (input.mode) {
             ConfirmationMode.CONSERVATIVE -> 0.42
             ConfirmationMode.MODERATE -> 0.30
@@ -402,7 +422,8 @@ internal object StrategyEvaluator {
             modelDispersionGatePassed &&
             targetBeforeStopGatePassed &&
             riskPenaltyGatePassed &&
-            historyGatePassed
+            historyGatePassed &&
+            !dailyTradeCapReached
         val expectancyGatePassed = if (!filterSettings.requireExpectancy) {
             true
         } else {
@@ -452,6 +473,7 @@ internal object StrategyEvaluator {
         val decision = when {
             bias == TradeBias.NEUTRAL || bestCandidate.corePassed < AnalysisSupport.minimumCoreRequired(input.mode) -> TradeDecision.REJECT
             approved -> TradeDecision.ELIGIBLE
+            dailyLossStopActive || dailyTradeCapReached -> TradeDecision.WATCHLIST
             performanceFeedback.strictModeActive && bias != TradeBias.NEUTRAL -> TradeDecision.WATCHLIST
             filterSettings.requireForecastSupport && forecastSupportScore < forecastThreshold && bestCandidate.bias != TradeBias.NEUTRAL -> TradeDecision.WATCHLIST
             filterSettings.requireForecastSupport && !modelSupportGatePassed && bestCandidate.bias != TradeBias.NEUTRAL -> TradeDecision.WATCHLIST
@@ -490,6 +512,11 @@ internal object StrategyEvaluator {
             targetBeforeStopScore = forecastModelMetrics.targetBeforeStopScore,
             targetBeforeStopThreshold = targetBeforeStopThreshold,
             setupStateAllowed = setupStateGatePassed,
+            sessionLabel = features.sessionContext.sessionLabel,
+            quietSession = features.sessionContext.isQuietSession,
+            londonOverlap = features.sessionContext.isLondonNyOverlap,
+            dailyTradeCapReached = dailyTradeCapReached,
+            dailyLossStopActive = dailyLossStopActive,
             setupQualityScore = setupQualityScore,
             setupQualityThreshold = setupQualityThreshold(modeConfig, bestCandidate.type),
             setupQualityCount = setupQualityCount,
@@ -574,6 +601,28 @@ internal object StrategyEvaluator {
         } else {
             forecastModelMetrics.bearishProbability
         }.coerceIn(0.0, 1.0)
+    }
+
+    private data class TodayTradeStats(
+        val tradesToday: Int,
+        val lossesToday: Int
+    )
+
+    private fun buildTodayTradeStats(
+        symbolCode: String,
+        timeframe: String,
+        closedTrades: List<ClosedTradeRecord>
+    ): TodayTradeStats {
+        val todayUtc = LocalDate.now(ZoneOffset.UTC)
+        val todaysTrades = closedTrades.filter { trade ->
+            trade.symbolCode == symbolCode &&
+                trade.timeframe == timeframe &&
+                Instant.ofEpochMilli(trade.closedAtEpochMillis).atOffset(ZoneOffset.UTC).toLocalDate() == todayUtc
+        }
+        return TodayTradeStats(
+            tradesToday = todaysTrades.size,
+            lossesToday = todaysTrades.count { it.pnlUsd < 0.0 }
+        )
     }
 
     private fun buildTradePerformanceFeedback(
@@ -678,6 +727,11 @@ internal object StrategyEvaluator {
         targetBeforeStopScore: Double,
         targetBeforeStopThreshold: Double,
         setupStateAllowed: Boolean,
+        sessionLabel: String,
+        quietSession: Boolean,
+        londonOverlap: Boolean,
+        dailyTradeCapReached: Boolean,
+        dailyLossStopActive: Boolean,
         setupQualityScore: Double,
         setupQualityThreshold: Double,
         setupQualityCount: Int,
@@ -732,6 +786,17 @@ internal object StrategyEvaluator {
         }
         if (filterSettings.requireSetupState && !setupStateAllowed) {
             reasons += "Current setup/trigger state is not valid for this mode."
+        }
+        if (quietSession) {
+            reasons += "Current candle is in a quiet gold session ($sessionLabel); setups are downgraded unless momentum is exceptional."
+        } else if (londonOverlap) {
+            reasons += "Session context is favorable ($sessionLabel) for gold follow-through."
+        }
+        if (dailyTradeCapReached) {
+            reasons += "Daily trade cap reached (2/2). Stand aside until next UTC day."
+        }
+        if (dailyLossStopActive) {
+            reasons += "Two losses recorded today. Risk lock is active until next UTC day."
         }
         if (setupQualityScore < setupQualityThreshold) {
             reasons += "Setup quality is below the minimum for execution."

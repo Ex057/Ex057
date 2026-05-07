@@ -86,46 +86,6 @@ private fun syntheticSpec(
 )
 
 val SupportedSymbols = listOf(
-    TradingSymbol("EURUSD", "Euro / US Dollar", "Forex", "frxEURUSD", spec = forexSpec(typicalSpread = 0.00010)),
-    TradingSymbol("AUDUSD", "Australian Dollar / US Dollar", "Forex", "frxAUDUSD", spec = forexSpec(typicalSpread = 0.00012)),
-    TradingSymbol("EURGBP", "Euro / British Pound", "Forex", "frxEURGBP", spec = forexSpec(typicalSpread = 0.00014)),
-    TradingSymbol("GBPUSD", "British Pound / US Dollar", "Forex", "frxGBPUSD", spec = forexSpec(typicalSpread = 0.00015)),
-    TradingSymbol("NZDUSD", "New Zealand Dollar / US Dollar", "Forex", "frxNZDUSD", spec = forexSpec(typicalSpread = 0.00016)),
-    TradingSymbol("USDCAD", "US Dollar / Canadian Dollar", "Forex", "frxUSDCAD", spec = forexSpec(typicalSpread = 0.00018)),
-    TradingSymbol("USDCHF", "US Dollar / Swiss Franc", "Forex", "frxUSDCHF", spec = forexSpec(typicalSpread = 0.00016)),
-    TradingSymbol("USDJPY", "US Dollar / Japanese Yen", "Forex", "frxUSDJPY", spec = forexSpec(typicalSpread = 0.015, pricePrecision = 3, tickSize = 0.001)),
-    TradingSymbol(
-        "BTCUSD",
-        "Bitcoin / US Dollar",
-        "Crypto",
-        "cryBTCUSD",
-        spec = symbolSpec(
-            contractSize = 1.0,
-            minLot = 0.001,
-            maxLot = 5.0,
-            lotStep = 0.001,
-            typicalSpread = 30.0,
-            effectiveLeverage = 50.0,
-            tickSize = 0.01,
-            pricePrecision = 2
-        )
-    ),
-    TradingSymbol(
-        "ETHUSD",
-        "Ethereum / US Dollar",
-        "Crypto",
-        "cryETHUSD",
-        spec = symbolSpec(
-            contractSize = 1.0,
-            minLot = 0.001,
-            maxLot = 10.0,
-            lotStep = 0.001,
-            typicalSpread = 3.0,
-            effectiveLeverage = 50.0,
-            tickSize = 0.01,
-            pricePrecision = 2
-        )
-    ),
     TradingSymbol(
         "XAUUSD",
         "Gold / US Dollar",
@@ -141,27 +101,7 @@ val SupportedSymbols = listOf(
             tickSize = 0.01,
             pricePrecision = 2
         )
-    ),
-    TradingSymbol("VOL10", "Volatility 10 Index", "Synthetic", "R_10", spec = syntheticSpec(minLot = 0.20, lotStep = 0.10, typicalSpread = 0.80)),
-    TradingSymbol("VOL25", "Volatility 25 Index", "Synthetic", "R_25", spec = syntheticSpec(minLot = 0.20, lotStep = 0.10, typicalSpread = 1.20)),
-    TradingSymbol("VOL50", "Volatility 50 Index", "Synthetic", "R_50", spec = syntheticSpec(minLot = 0.20, lotStep = 0.10, typicalSpread = 1.80)),
-    TradingSymbol("VOL75", "Volatility 75 Index", "Synthetic", "R_75", spec = syntheticSpec(minLot = 0.20, lotStep = 0.10, typicalSpread = 3.20)),
-    TradingSymbol("VOL100", "Volatility 100 Index", "Synthetic", "R_100", spec = syntheticSpec(minLot = 0.20, lotStep = 0.10, typicalSpread = 4.20)),
-    TradingSymbol("VOL10_1S", "Volatility 10 (1s) Index", "Synthetic", "1HZ10V", spec = syntheticSpec(minLot = 0.005, lotStep = 0.001, typicalSpread = 0.08, effectiveLeverage = 300.0)),
-    TradingSymbol("VOL25_1S", "Volatility 25 (1s) Index", "Synthetic", "1HZ25V", spec = syntheticSpec(minLot = 0.005, lotStep = 0.001, typicalSpread = 0.12, effectiveLeverage = 300.0)),
-    TradingSymbol("VOL50_1S", "Volatility 50 (1s) Index", "Synthetic", "1HZ50V", spec = syntheticSpec(minLot = 0.005, lotStep = 0.001, typicalSpread = 0.18, effectiveLeverage = 300.0)),
-    TradingSymbol("VOL75_1S", "Volatility 75 (1s) Index", "Synthetic", "1HZ75V", spec = syntheticSpec(minLot = 0.005, lotStep = 0.001, typicalSpread = 0.28, effectiveLeverage = 300.0)),
-    TradingSymbol("VOL100_1S", "Volatility 100 (1s) Index", "Synthetic", "1HZ100V", spec = syntheticSpec(minLot = 0.005, lotStep = 0.001, typicalSpread = 0.38, effectiveLeverage = 300.0)),
-    TradingSymbol("BOOM300", "Boom 300 Index", "Crash/Boom", "BOOM300N", spec = syntheticSpec(minLot = 0.20, lotStep = 0.10, typicalSpread = 0.575, effectiveLeverage = 200.0)),
-    TradingSymbol("BOOM500", "Boom 500 Index", "Crash/Boom", "BOOM500", spec = syntheticSpec(minLot = 0.20, lotStep = 0.10, typicalSpread = 0.392, effectiveLeverage = 200.0)),
-    TradingSymbol("BOOM600", "Boom 600 Index", "Crash/Boom", "BOOM600", spec = syntheticSpec(minLot = 0.10, lotStep = 0.10, typicalSpread = 0.418, effectiveLeverage = 200.0)),
-    TradingSymbol("BOOM900", "Boom 900 Index", "Crash/Boom", "BOOM900", spec = syntheticSpec(minLot = 0.10, lotStep = 0.10, typicalSpread = 0.499, effectiveLeverage = 200.0)),
-    TradingSymbol("BOOM1000", "Boom 1000 Index", "Crash/Boom", "BOOM1000", spec = syntheticSpec(minLot = 0.20, lotStep = 0.10, typicalSpread = 1.5719, effectiveLeverage = 200.0)),
-    TradingSymbol("CRASH300", "Crash 300 Index", "Crash/Boom", "CRASH300N", spec = syntheticSpec(minLot = 0.20, lotStep = 0.10, typicalSpread = 0.575, effectiveLeverage = 200.0)),
-    TradingSymbol("CRASH500", "Crash 500 Index", "Crash/Boom", "CRASH500", spec = syntheticSpec(minLot = 0.20, lotStep = 0.10, typicalSpread = 0.392, effectiveLeverage = 200.0)),
-    TradingSymbol("CRASH600", "Crash 600 Index", "Crash/Boom", "CRASH600", spec = syntheticSpec(minLot = 0.10, lotStep = 0.10, typicalSpread = 0.418, effectiveLeverage = 200.0)),
-    TradingSymbol("CRASH900", "Crash 900 Index", "Crash/Boom", "CRASH900", spec = syntheticSpec(minLot = 0.10, lotStep = 0.10, typicalSpread = 0.499, effectiveLeverage = 200.0)),
-    TradingSymbol("CRASH1000", "Crash 1000 Index", "Crash/Boom", "CRASH1000", spec = syntheticSpec(minLot = 0.20, lotStep = 0.10, typicalSpread = 1.5719, effectiveLeverage = 200.0))
+    )
 )
 
 val SupportedTimeframes = listOf("1m", "5m", "15m", "30m", "1h", "2h", "4h", "8h", "1d")
@@ -181,9 +121,6 @@ fun ControlsPanel(
     onRiskPercentInputChange: (String) -> Unit
 ) {
     val selectedCategory = selectedSymbol.category
-    val symbolsInCategory = remember(selectedCategory) {
-        SupportedSymbols.filter { it.category == selectedCategory }
-    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -196,23 +133,18 @@ fun ControlsPanel(
             Text("Trading Configuration", fontSize = 18.sp, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                DropdownField(
-                    label = "Category",
+                OutlinedTextField(
                     value = selectedCategory,
-                    options = SupportedCategories,
-                    onSelect = { category ->
-                        val firstSymbol = SupportedSymbols.first { it.category == category }
-                        onSymbolChange(firstSymbol)
-                    },
+                    onValueChange = {},
+                    enabled = false,
+                    label = { Text("Market") },
                     modifier = Modifier.weight(1f)
                 )
-                DropdownField(
-                    label = "Symbol",
+                OutlinedTextField(
                     value = selectedSymbol.code,
-                    options = symbolsInCategory.map { it.code },
-                    onSelect = { code ->
-                        onSymbolChange(symbolsInCategory.first { it.code == code })
-                    },
+                    onValueChange = {},
+                    enabled = false,
+                    label = { Text("Symbol") },
                     modifier = Modifier.weight(1f)
                 )
             }
