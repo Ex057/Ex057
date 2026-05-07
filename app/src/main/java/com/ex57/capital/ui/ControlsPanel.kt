@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -20,6 +22,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -149,14 +152,21 @@ fun ControlsPanel(
                 )
             }
             Spacer(modifier = Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                DropdownField(
-                    label = "Timeframe",
-                    value = selectedTimeframe,
-                    options = SupportedTimeframes,
-                    onSelect = onTimeframeChange,
-                    modifier = Modifier.weight(1f)
-                )
+            Text("Timeframe", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                SupportedTimeframes.forEach { timeframe ->
+                    FilterChip(
+                        selected = selectedTimeframe == timeframe,
+                        onClick = { onTimeframeChange(timeframe) },
+                        label = { Text(timeframe.uppercase()) }
+                    )
+                }
             }
             Spacer(modifier = Modifier.height(12.dp))
             DropdownField(

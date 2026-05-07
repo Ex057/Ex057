@@ -9,6 +9,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -77,6 +78,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.geometry.Offset
@@ -535,6 +537,13 @@ fun EX57App(
         analysisResult = null
     }
 
+    LaunchedEffect(selectedTab, selectedSymbol.derivSymbol, selectedTimeframe) {
+        if (selectedTab == AppTab.CHARTS) {
+            priceViewModel.connect(selectedSymbol.derivSymbol, selectedTimeframe)
+            priceViewModel.refreshCandles(selectedSymbol.derivSymbol, selectedTimeframe)
+        }
+    }
+
     LaunchedEffect(alertMonitor.enabled, alertMonitor.symbol, alertMonitor.timeframe, alertMonitor.intervalMinutes) {
         val monitorSymbol = alertMonitor.symbol ?: return@LaunchedEffect
         if (!alertMonitor.enabled) return@LaunchedEffect
@@ -555,14 +564,7 @@ fun EX57App(
 
     Scaffold(
         containerColor = Color.Transparent,
-        contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        bottomBar = {
-            FloatingBottomNav(
-                selectedTab = selectedTab,
-                onTabSelected = { selectedTab = it },
-                darkTheme = darkTheme
-            )
-        }
+        contentWindowInsets = WindowInsets(0, 0, 0, 0)
     ) { padding ->
         Box(
             modifier = Modifier
@@ -607,6 +609,8 @@ fun EX57App(
                         onTimeframeChange = {
                             selectedTimeframe = it
                             analysisResult = null
+                            priceViewModel.connect(selectedSymbol.derivSymbol, it)
+                            priceViewModel.refreshCandles(selectedSymbol.derivSymbol, it)
                         },
                         selectedMode = selectedMode,
                         onModeChange = { selectedMode = it },
@@ -637,10 +641,13 @@ fun EX57App(
                         onTimeframeChange = {
                             selectedTimeframe = it
                             analysisResult = null
+                            priceViewModel.connect(selectedSymbol.derivSymbol, it)
+                            priceViewModel.refreshCandles(selectedSymbol.derivSymbol, it)
                         },
                         livePrice = livePrice,
                         recentPrices = recentPrices,
                         candles = candleHistory,
+                        candleStack = candleStack,
                         dataQuality = dataQuality,
                         analysisResult = analysisResult,
                         connectedFeed = connectedFeed,
@@ -689,6 +696,13 @@ fun EX57App(
                     )
                 }
             }
+            FloatingBottomNav(
+                selectedTab = selectedTab,
+                onTabSelected = { selectedTab = it },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 8.dp)
+            )
         }
     }
 }
@@ -1901,6 +1915,7 @@ private fun ChartsPanel(
     livePrice: Double?,
     recentPrices: List<Double>,
     candles: List<MarketCandle>,
+    candleStack: Map<String, List<MarketCandle>>,
     dataQuality: DataQuality,
     analysisResult: AnalysisResult?,
     connectedFeed: String?,
@@ -1913,9 +1928,18 @@ private fun ChartsPanel(
     onAnalyzeMarket: () -> Unit,
     isAnalyzingMarket: Boolean
 ) {
-    val chartCandles = remember(candles, recentPrices, selectedTimeframe) {
-        if (candles.isNotEmpty()) {
-            candles.takeLast(480).map {
+    val selectedTfCandles = remember(candleStack, candles, selectedTimeframe) {
+        candleStack[selectedTimeframe].orEmpty().ifEmpty { candles }
+    }
+    val chartCandles = remember(selectedTfCandles, recentPrices, selectedTimeframe) {
+        val target = when (selectedTimeframe) {
+            "1m", "5m" -> 180
+            "15m", "30m" -> 150
+            "1h", "4h", "1d" -> 120
+            else -> 140
+        }
+        if (selectedTfCandles.isNotEmpty()) {
+            selectedTfCandles.takeLast(target).map {
                 PriceCandle(
                     epoch = it.epoch,
                     open = it.open,
@@ -1937,8 +1961,8 @@ private fun ChartsPanel(
     }
     val isLiveFeed = connectedFeed == selectedSymbol.derivSymbol
     Surface(
-        color = Color(0xFF000000),
-        contentColor = Color.White,
+        color = Color(0xFFF1F1F1),
+        contentColor = Color(0xFF2B2B2B),
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
@@ -1946,46 +1970,107 @@ private fun ChartsPanel(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(top = 8.dp, bottom = 4.dp)
+                .padding(top = 8.dp, bottom = 6.dp)
         ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("${selectedSymbol.code} · $selectedTimeframe", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "${selectedSymbol.code} ${selectedTimeframe.uppercase()} Exchange Rate  ${livePrice?.let(::formatDisplayPrice) ?: "-"}",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
                     Spacer(modifier = Modifier.height(2.dp))
-                    Text(selectedSymbol.label, color = Color(0xFF6B7280), fontSize = 11.sp)
+                    val rangePct = priceRange?.let { (high, low) ->
+                        ((high - low) / low.coerceAtLeast(0.00001)) * 100.0
+                    } ?: 0.0
+                    Text(
+                        "${selectedSymbol.label}  ${formatPercentSigned(rangePct)}",
+                        color = Color(0xFF2E7D32),
+                        fontSize = 11.sp
+                    )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    LiveStateChip(active = isLiveFeed)
-                    Text(livePrice?.let(::formatDisplayPrice) ?: "-", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                    Text(
+                        "Bid/Ask: ${livePrice?.let(::formatDisplayPrice) ?: "-"}/${livePrice?.let(::formatDisplayPrice) ?: "-"}",
+                        color = Color(0xFF555555),
+                        fontSize = 11.sp
+                    )
                     ChartActionButton(
                         icon = Icons.Outlined.Refresh,
-                        label = if (isAnalyzingMarket) "Analysing market" else "Analyse market",
-                        tint = Color(0xFFFFD60A),
+                        label = if (isAnalyzingMarket) "Refreshing" else "Refresh",
+                        tint = Color(0xFF455A64),
                         onClick = onAnalyzeMarket
                     )
                 }
             }
+            Spacer(modifier = Modifier.height(6.dp))
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                    .padding(horizontal = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                val bars = listOf(
+                    "1 minute range" to 0.72f,
+                    "5 minutes range" to 0.68f,
+                    "15 minutes range" to 0.54f,
+                    "30 minutes range" to 0.28f,
+                    "1 Hour range" to 0.31f,
+                    "4 Hours range" to 0.29f
+                )
+                bars.chunked(3).forEach { column ->
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        column.forEach { (label, strength) ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(label, fontSize = 10.sp, color = Color(0xFF666666))
+                                Box(
+                                    modifier = Modifier
+                                        .width(104.dp)
+                                        .height(8.dp)
+                                        .background(Color(0xFFD8D8D8), RoundedCornerShape(3.dp))
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxHeight()
+                                            .fillMaxWidth(strength)
+                                            .background(
+                                                if (strength >= 0.5f) Color(0xFF6CC04A) else Color(0xFFE07A73),
+                                                RoundedCornerShape(3.dp)
+                                            )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 14.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                listOf("1m", "5m", "15m", "30m", "1h", "4h").forEach { timeframe ->
+                listOf("M1" to "1m", "M5" to "5m", "M15" to "15m", "M30" to "30m", "H1" to "1h", "H4" to "4h", "D1" to "1d").forEach { (label, timeframe) ->
                     androidx.compose.material3.Surface(
                         onClick = { onTimeframeChange(timeframe) },
-                        color = if (selectedTimeframe == timeframe) Color(0xFF1F2937) else Color.Transparent,
-                        contentColor = if (selectedTimeframe == timeframe) Color.White else Color(0xFF9CA3AF),
-                        shape = RoundedCornerShape(14.dp)
+                        color = if (selectedTimeframe == timeframe) Color(0xFFD7DCE5) else Color(0xFFE7E7E7),
+                        contentColor = Color(0xFF5B5B5B),
+                        shape = RoundedCornerShape(4.dp)
                     ) {
                         Text(
-                            timeframe.uppercase(),
+                            label,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Medium
@@ -1993,59 +2078,20 @@ private fun ChartsPanel(
                     }
                 }
             }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 10.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                "${chartCandles.size} candles • drag for older candles • pinch or use zoom ${"%.1f".format(pinchZoomScale)}x",
-                    color = Color(0xFF6B7280),
-                    fontSize = 11.sp
-                )
-                ToggleTerminalChip(
-                    label = if (followLatest) "Auto" else "Manual",
-                    active = followLatest,
-                    onClick = { onFollowLatestChange(!followLatest) }
-                )
-            }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 10.dp, vertical = 2.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                ChartDensity.values().forEach { density ->
-                    ToggleTerminalChip(
-                        label = density.label,
-                        active = chartDensity == density,
-                        onClick = { onChartDensityChange(density) }
-                    )
-                }
-                ToggleTerminalChip(
-                    label = "Zoom -",
-                    active = false,
-                    onClick = { onPinchZoomScaleChange((pinchZoomScale * 0.82f).coerceIn(0.45f, 3.5f)) }
-                )
-                ToggleTerminalChip(
-                    label = "Zoom +",
-                    active = false,
-                    onClick = { onPinchZoomScaleChange((pinchZoomScale * 1.22f).coerceIn(0.45f, 3.5f)) }
-                )
-            }
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
-                    .padding(horizontal = 0.dp, vertical = 4.dp)
+                    .padding(horizontal = 14.dp, vertical = 6.dp)
+                    .background(Color(0xFFF8F8F8), RoundedCornerShape(2.dp))
+                    .border(1.dp, Color(0xFFBDBDBD), RoundedCornerShape(2.dp))
             ) {
                 if (chartCandles.size > 1) {
                     PriceChart(
                         candles = chartCandles,
                         overlays = overlays,
                         analysisResult = analysisResult,
+                        pricePrecision = selectedSymbol.spec.pricePrecision,
                         showFastTrend = true,
                         showSlowTrend = true,
                         showBiasLine = true,
@@ -2054,49 +2100,21 @@ private fun ChartsPanel(
                         onPinchZoom = { zoomChange ->
                             onPinchZoomScaleChange((pinchZoomScale * zoomChange).coerceIn(0.45f, 3.5f))
                         },
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier.fillMaxSize().padding(6.dp)
                     )
                 } else {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .background(Color(0xFF05070B)),
+                            .background(Color(0xFFF8F8F8)),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text("Connect feed and analyze to load chart.", color = Color(0xFF9CA3AF), fontSize = 13.sp)
+                        Text("Connect feed and analyze to load chart.", color = Color(0xFF888888), fontSize = 13.sp)
                     }
                 }
             }
             ChartTimeAxis(candles = chartCandles)
             Spacer(modifier = Modifier.height(6.dp))
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 10.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                ChartStatPill(
-                    label = "High",
-                    value = priceRange?.first?.let(::formatDisplayPrice) ?: "-",
-                    modifier = Modifier.weight(1f)
-                )
-                ChartStatPill(
-                    label = "Low",
-                    value = priceRange?.second?.let(::formatDisplayPrice) ?: "-",
-                    modifier = Modifier.weight(1f)
-                )
-                ChartStatPill(
-                    label = "Range",
-                    value = priceRange?.let { (high, low) -> formatPercent(((high - low) / low.coerceAtLeast(0.00001)) * 100.0) } ?: "-",
-                    modifier = Modifier.weight(1f)
-                )
-            }
-            Text(
-                "${selectedSymbol.label} • ${dataQuality.label} • ${if (followLatest) "latest candle follows live feed" else "manual scroll locked"}",
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                color = Color(0xFF6B7280),
-                fontSize = 11.sp
-            )
         }
     }
 }
@@ -2557,6 +2575,7 @@ private fun PriceChart(
     candles: List<PriceCandle>,
     overlays: ChartOverlayState,
     analysisResult: AnalysisResult?,
+    pricePrecision: Int,
     showFastTrend: Boolean,
     showSlowTrend: Boolean,
     showBiasLine: Boolean,
@@ -2565,15 +2584,16 @@ private fun PriceChart(
     onPinchZoom: ((Float) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    val outlineColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
-    val bullishCandleColor = MaterialTheme.colorScheme.primary
-    val bearishCandleColor = MaterialTheme.colorScheme.error
-    val fastLineColor = MaterialTheme.colorScheme.secondary
-    val slowLineColor = MaterialTheme.colorScheme.tertiary
-    val biasLineColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.75f)
-    val entryLineColor = MaterialTheme.colorScheme.tertiary
-    val stopLineColor = MaterialTheme.colorScheme.error
-    val targetLineColor = MaterialTheme.colorScheme.primary
+    val outlineColor = Color(0xFFAFAFAF)
+    val bullishCandleColor = Color(0xFF61C34E)
+    val bearishCandleColor = Color(0xFFE74C3C)
+    val wickColor = Color(0xFF9A9A9A)
+    val fastLineColor = Color(0xFF8AA3B2)
+    val slowLineColor = Color(0xFFBBC7D1)
+    val biasLineColor = Color(0xFF5E8AB3).copy(alpha = 0.65f)
+    val entryLineColor = Color(0xFFEFC14A)
+    val stopLineColor = Color(0xFFDF7B73)
+    val targetLineColor = Color(0xFF79BF67)
     val tradeSetup = analysisResult?.tradeSetup
     val candleTop = candles.maxOfOrNull { it.high } ?: return
     val candleBottom = candles.minOfOrNull { it.low } ?: return
@@ -2635,14 +2655,25 @@ private fun PriceChart(
             ) {
                 val requestedCandleWidth = with(density) { candleSpacing.toPx() }
                 val candleWidth = maxOf(requestedCandleWidth, size.width / candles.size.coerceAtLeast(1))
-                val bodyWidth = candleWidth * 0.58f
+                val bodyWidth = candleWidth * 0.78f
                 val topInset = size.height * 0.16f
                 val bottomInset = size.height * 0.10f
                 val drawableHeight = (size.height - topInset - bottomInset).coerceAtLeast(1f)
+                val gridColor = Color(0xFFCFCFCF)
 
                 fun yFor(value: Double): Float {
                     val normalized = ((topValue - value) / range).toFloat().coerceIn(0f, 1f)
                     return topInset + (normalized * drawableHeight)
+                }
+
+                repeat(4) { row ->
+                    val y = topInset + (drawableHeight * (row.toFloat() / 3f))
+                    drawLine(
+                        color = gridColor,
+                        start = Offset(0f, y),
+                        end = Offset(size.width, y),
+                        strokeWidth = 1f
+                    )
                 }
 
                 candles.forEachIndexed { index, candle ->
@@ -2655,14 +2686,14 @@ private fun PriceChart(
                     val candleColor = if (bullish) bullishCandleColor else bearishCandleColor
 
                     drawLine(
-                        color = candleColor.copy(alpha = 0.9f),
+                        color = wickColor,
                         start = Offset(centerX, highY),
                         end = Offset(centerX, lowY),
-                        strokeWidth = 2f
+                        strokeWidth = 1.5f
                     )
 
                     val bodyTop = minOf(openY, closeY)
-                    val bodyHeight = kotlin.math.abs(closeY - openY).coerceAtLeast(4f)
+                    val bodyHeight = kotlin.math.abs(closeY - openY).coerceAtLeast(6f)
                     drawRect(
                         color = candleColor,
                         topLeft = Offset(centerX - (bodyWidth / 2f), bodyTop),
@@ -2712,7 +2743,58 @@ private fun PriceChart(
                     color = outlineColor,
                     topLeft = Offset.Zero,
                     size = size,
-                    style = Stroke(width = 2f)
+                    style = Stroke(width = 1.2f)
+                )
+
+                val markerIndexes = listOf(
+                    candles.lastIndex - 20,
+                    candles.lastIndex - 14,
+                    candles.lastIndex - 9,
+                    candles.lastIndex - 4
+                ).filter { it in candles.indices }
+                markerIndexes.forEach { markerIndex ->
+                    val markerCandle = candles[markerIndex]
+                    val centerX = (markerIndex * candleWidth) + (candleWidth / 2f)
+                    val y = yFor(markerCandle.high) - 12f
+                    drawCircle(
+                        color = Color(0xFFB9D86C),
+                        radius = 10f,
+                        center = Offset(centerX, y)
+                    )
+                    val stroke = 1.8f
+                    drawLine(
+                        color = Color(0xFF4B5A3E),
+                        start = Offset(centerX - 3.2f, y - 3.2f),
+                        end = Offset(centerX - 3.2f, y + 3.2f),
+                        strokeWidth = stroke
+                    )
+                    drawLine(
+                        color = Color(0xFF4B5A3E),
+                        start = Offset(centerX - 3.2f, y),
+                        end = Offset(centerX + 2.6f, y),
+                        strokeWidth = stroke
+                    )
+                }
+            }
+        }
+        Column(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 4.dp),
+            verticalArrangement = Arrangement.SpaceBetween
+        ) {
+            val levels = listOf(
+                topValue,
+                topValue - (range * 0.25),
+                topValue - (range * 0.50),
+                topValue - (range * 0.75),
+                bottomValue
+            )
+            levels.forEach { level ->
+                Text(
+                    formatPrice(level, pricePrecision),
+                    color = Color(0xFF7C7C7C),
+                    fontSize = 10.sp
                 )
             }
         }
@@ -4425,44 +4507,53 @@ private fun SettingsToggleRow(
 private fun FloatingBottomNav(
     selectedTab: AppTab,
     onTabSelected: (AppTab) -> Unit,
-    darkTheme: Boolean
+    modifier: Modifier = Modifier
 ) {
-    val compactLabels = LocalDensity.current.fontScale > 1.15f
-    Column(
-        modifier = Modifier
+    val tabs = listOf(AppTab.HOME, AppTab.CHARTS, AppTab.VALIDATION, AppTab.SETTINGS)
+    Box(
+        modifier = modifier
             .fillMaxWidth()
-            .background(
-                if (darkTheme) {
-                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.98f)
-                } else {
-                    MaterialTheme.colorScheme.surface.copy(alpha = 0.99f)
-                }
-            )
+            .navigationBarsPadding()
+            .padding(bottom = 10.dp),
+        contentAlignment = Alignment.Center
     ) {
         Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(1.dp)
+                .width(318.dp)
+                .height(68.dp)
+                .blur(12.dp)
                 .background(
-                    if (darkTheme) Color(0xFF1F2937) else MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)
+                    Brush.radialGradient(
+                        listOf(
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.42f),
+                            Color.Transparent
+                        )
+                    ),
+                    RoundedCornerShape(36.dp)
                 )
         )
         Row(
             modifier = Modifier
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(
-                    horizontal = if (compactLabels) 4.dp else 6.dp,
-                    vertical = if (compactLabels) 4.dp else 6.dp
+                .width(306.dp)
+                .height(62.dp)
+                .padding(horizontal = 8.dp)
+                .background(
+                    brush = Brush.horizontalGradient(
+                        listOf(
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.30f),
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.30f)
+                        )
+                    ),
+                    shape = RoundedCornerShape(34.dp)
                 ),
-            horizontalArrangement = Arrangement.SpaceEvenly,
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            AppTab.values().forEach { tab ->
-                BottomNavItem(
+            tabs.forEach { tab ->
+                DynamicIslandNavItem(
                     tab = tab,
                     selected = tab == selectedTab,
-                    compactLabels = compactLabels,
                     onClick = { onTabSelected(tab) }
                 )
             }
@@ -4471,59 +4562,32 @@ private fun FloatingBottomNav(
 }
 
 @Composable
-private fun BottomNavItem(
+private fun DynamicIslandNavItem(
     tab: AppTab,
     selected: Boolean,
-    compactLabels: Boolean,
     onClick: () -> Unit
 ) {
     val scale by animateFloatAsState(
-        targetValue = if (selected) 1.01f else 1f,
+        targetValue = if (selected) 1.08f else 1f,
         animationSpec = spring(),
-        label = "tabScale"
+        label = "dynamicIslandScale"
     )
 
     androidx.compose.material3.Surface(
         onClick = onClick,
-        color = Color.Transparent,
+        color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.20f) else Color.Transparent,
         modifier = Modifier.scale(scale),
-        shape = RoundedCornerShape(16.dp)
+        shape = RoundedCornerShape(18.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(
-                horizontal = if (compactLabels) 10.dp else 12.dp,
-                vertical = if (compactLabels) 6.dp else 5.dp
-            ),
-            horizontalAlignment = Alignment.CenterHorizontally
+        Box(
+            modifier = Modifier.size(44.dp),
+            contentAlignment = Alignment.Center
         ) {
             Icon(
                 imageVector = tab.icon,
                 contentDescription = tab.label,
-                tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(19.dp)
-            )
-            if (!compactLabels) {
-                Spacer(modifier = Modifier.height(3.dp))
-                Text(
-                    text = tab.label,
-                    fontSize = 10.sp,
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(modifier = Modifier.height(3.dp))
-            } else {
-                Spacer(modifier = Modifier.height(5.dp))
-            }
-            Box(
-                modifier = Modifier
-                    .width(18.dp)
-                    .height(2.dp)
-                    .background(
-                        color = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
-                        shape = RoundedCornerShape(999.dp)
-                    )
+                tint = if (selected) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp)
             )
         }
     }
