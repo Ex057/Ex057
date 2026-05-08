@@ -84,6 +84,7 @@
     <h1>EX57 Real-Time Validation (Deriv Feed)</h1>
     <div class="status">
         <span class="pill" id="wsState">WS: Disconnected</span>
+        <span class="pill" id="apiState">API: Not set</span>
         <span class="pill" id="livePrice">Live: -</span>
         <span class="pill" id="activePair">Pair: XAUUSD</span>
         <span class="pill" id="recordsCount">Records: 0</span>
@@ -106,6 +107,7 @@
         </select>
         <label for="tf">TF</label>
         <select id="tf">
+            <option value="all">ALL (Top-Down -> 5m Entry)</option>
             <option value="1m">1m</option>
             <option value="5m">5m</option>
             <option value="15m" selected>15m</option>
@@ -114,16 +116,37 @@
             <option value="4h">4h</option>
             <option value="1d">1d</option>
         </select>
-        <label for="horizon">Horizon (min)</label>
-        <input id="horizon" type="number" min="1" value="60" style="width: 100px;">
+        <label for="mode">Mode</label>
+        <select id="mode">
+            <option value="CONSERVATIVE">Conservative</option>
+            <option value="MODERATE" selected>Moderate</option>
+            <option value="AGGRESSIVE">Aggressive</option>
+            <option value="LENIENT">Lenient</option>
+        </select>
+        <label for="horizon">Horizon (min, 0=auto)</label>
+        <input id="horizon" type="number" min="0" value="0" style="width: 120px;">
+        <label for="endpoint">Predict API</label>
+        <input id="endpoint" type="text" placeholder="http://127.0.0.1:8000/predict" style="width: 260px;">
         <button id="runBtn">Run Analysis</button>
+        <button id="aiBtn">Run AI Deep Dive</button>
+        <button id="wfBtn">Run Walk-Forward (All Modes)</button>
+        <label for="wfSource">WF Source</label>
+        <select id="wfSource">
+            <option value="local" selected>Local Rules</option>
+            <option value="api">API /predict</option>
+        </select>
+        <label for="wfAiSample">WF AI</label>
+        <select id="wfAiSample">
+            <option value="off" selected>Off</option>
+            <option value="sample">Sample Deep Dive</option>
+        </select>
         <button id="autoBtn">Start Auto Run (5m)</button>
         <button id="clearBtn" class="danger">Clear Logs</button>
         <button id="exportBtn">Export JSON</button>
         <span class="small grow">Runs locally. Replace <code>runEx57LikeAnalysis</code> with your pipeline endpoint later.</span>
     </div>
     <div class="small" style="margin-bottom: 8px;">
-        Strategy checks simulated here: EMA20/EMA200 trend, ATR stop distance, session bonus (London/NY overlap), and fixed RR 1:2.67.
+        Strategy checks: ADX trend filter, EMA20/EMA200 alignment, pullback trigger, ATR stop distance, London/NY session filter, RR 1:2.67, TP/SL hit-first path evaluation.
     </div>
     <table>
         <thead>
@@ -133,12 +156,17 @@
             <th>TF</th>
             <th>Prediction</th>
             <th>Confidence</th>
+            <th>Source</th>
             <th>Entry Price</th>
             <th>Stop Loss</th>
             <th>Target</th>
             <th>ATR</th>
             <th>EMA20/200</th>
             <th>Session</th>
+            <th>Horizon</th>
+            <th>MFE</th>
+            <th>MAE</th>
+            <th>Blockers</th>
             <th>Outcome</th>
             <th>Resolved At</th>
         </tr>
@@ -147,6 +175,28 @@
         <!-- logs will be appended here -->
         </tbody>
     </table>
+    <h3 style="margin-top:16px;">Walk-Forward Scorecard</h3>
+    <div class="small" style="margin-bottom: 8px;">
+        Walk-forward is historical replay on fetched candles (not the current live signal). It can show wins even when the current signal is blocked.
+    </div>
+    <table>
+        <thead>
+        <tr>
+            <th>Mode</th>
+            <th>Total Signals</th>
+            <th>Triggered</th>
+            <th>Wins</th>
+            <th>Losses</th>
+            <th>No Hit</th>
+            <th>Not Triggered</th>
+            <th>Win Rate (Resolved)</th>
+        </tr>
+        </thead>
+        <tbody id="wfBody"></tbody>
+    </table>
+    <div class="small" id="wfMeta" style="margin-top:6px;">WF run metadata will appear here.</div>
+    <h3 style="margin-top:16px;">AI Deep Dive</h3>
+    <pre id="aiOutput" style="background:#0c1323;border:1px solid #2a2f45;border-radius:8px;padding:10px;overflow:auto;max-height:260px;">No AI deep dive run yet.</pre>
 </div>
 
 <script>
@@ -165,8 +215,15 @@
         VOL75: "R_75",
         VOL100: "R_100"
     };
-    const TF_SECONDS = { "1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400 };
+    const TF_SECONDS = { "all": 300, "1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400 };
+    const TF_LOOKAHEAD_BARS = { "all": 12, "1m": 20, "5m": 12, "15m": 8, "30m": 6, "1h": 4, "4h": 3, "1d": 2 };
     const STORE_KEY = "ex57_validation_records_v1";
+    const MODE_CONFIG = {
+        CONSERVATIVE: { minimumCoreRequired: 5, directionalStrengthThreshold: 0.66, supportThreshold: 3.2 },
+        MODERATE: { minimumCoreRequired: 4, directionalStrengthThreshold: 0.56, supportThreshold: 2.5 },
+        AGGRESSIVE: { minimumCoreRequired: 3, directionalStrengthThreshold: 0.48, supportThreshold: 1.9 },
+        LENIENT: { minimumCoreRequired: 3, directionalStrengthThreshold: 0.40, supportThreshold: 1.35 }
+    };
 
     class DerivFeed {
         constructor(appId) {
@@ -316,22 +373,59 @@
         return Math.max(0, Math.min(100, (directional / vol) * 100));
     }
 
-    function runEx57LikeAnalysis(candles, pair, timeframe) {
+    function horizonMinutesForTf(tf, userOverrideMin) {
+        if (Number(userOverrideMin) > 0) return Number(userOverrideMin);
+        const bars = TF_LOOKAHEAD_BARS[tf] || 12;
+        return Math.ceil((bars * (TF_SECONDS[tf] || 300)) / 60);
+    }
+
+    function emaValue(values, period) {
+        if (!values.length) return 0;
+        return ema(values, period);
+    }
+
+    function classifySession(session) {
+        return session === "London Open" || session === "London-NY Overlap";
+    }
+
+    function runEx57LikeAnalysis(candles, pair, timeframe, mode = "MODERATE") {
+        const cfg = MODE_CONFIG[mode] || MODE_CONFIG.MODERATE;
         const closes = candles.map(c => c.close);
         const entry = closes[closes.length - 1];
-        const ema20 = ema(closes.slice(-220), 20);
-        const ema200 = ema(closes.slice(-220), 200);
+        const c220 = closes.slice(-220);
+        const ema20 = emaValue(c220, 20);
+        const ema200 = emaValue(c220, 200);
+        const ema20Prev = emaValue(c220.slice(0, -1), 20);
+        const ema200Prev = emaValue(c220.slice(0, -1), 200);
         const atr14 = atr(candles.slice(-220), 14);
         const adx14 = adxProxy(candles.slice(-220), 14);
         const session = sessionLabelUtc();
+        const last = candles[candles.length - 1];
 
-        const bullish = entry >= ema200 && entry >= ema20;
-        const bearish = entry < ema200 && entry <= ema20;
-        const trendOk = adx14 > 25;
-        const sessionOk = session === "London Open" || session === "London-NY Overlap";
+        const emaAlignedBull = ema20 > ema200;
+        const emaAlignedBear = ema20 < ema200;
+        const slopeBull = ema20 > ema20Prev && ema200 >= ema200Prev;
+        const slopeBear = ema20 < ema20Prev && ema200 <= ema200Prev;
+        const pullbackNearEma20 = Math.abs(entry - ema20) <= Math.max(atr14 * 0.35, entry * 0.00045);
+        const candleBull = last.close > last.open;
+        const candleBear = last.close < last.open;
+        const adxMin = timeframe === "1m" ? 30 : 25;
+        const trendOk = adx14 > adxMin;
+        const sessionOk = classifySession(session);
+        const directionalStrength = Math.min(1, Math.max(0, (Math.abs(ema20 - ema200) / Math.max(entry * 0.002, 1e-6))));
+        const bullish = entry >= ema200 && emaAlignedBull && slopeBull && candleBull && pullbackNearEma20;
+        const bearish = entry <= ema200 && emaAlignedBear && slopeBear && candleBear && pullbackNearEma20;
+        const coreCount =
+            (trendOk ? 1 : 0) +
+            (sessionOk ? 1 : 0) +
+            (pullbackNearEma20 ? 1 : 0) +
+            ((bullish || bearish) ? 1 : 0) +
+            (directionalStrength >= cfg.directionalStrengthThreshold ? 1 : 0);
 
         let direction = "Neutral";
-        if (trendOk && sessionOk) direction = bullish ? "Bullish" : (bearish ? "Bearish" : "Neutral");
+        if (trendOk && sessionOk && coreCount >= cfg.minimumCoreRequired) {
+            direction = bullish ? "Bullish" : (bearish ? "Bearish" : "Neutral");
+        }
 
         const stopDist = Math.max(atr14 * 0.85, entry * 0.0012);
         const targetDist = stopDist * 2.67;
@@ -339,9 +433,10 @@
         const target = direction === "Bullish" ? entry + targetDist : direction === "Bearish" ? entry - targetDist : null;
 
         let confidence = 42;
-        confidence += trendOk ? 16 : -8;
+        confidence += trendOk ? 16 : -12;
         confidence += sessionOk ? 12 : -6;
-        confidence += bullish || bearish ? 10 : -5;
+        confidence += pullbackNearEma20 ? 8 : -6;
+        confidence += bullish || bearish ? 14 : -7;
         confidence = Math.max(20, Math.min(89, confidence));
 
         return {
@@ -355,11 +450,48 @@
             ema200,
             adx14,
             session,
+            modelSource: "local-gated",
+            mode,
             blockers: [
-                trendOk ? null : "ADX<=25",
-                sessionOk ? null : "Session"
+                trendOk ? null : `ADX<=${adxMin}`,
+                sessionOk ? null : "Session",
+                pullbackNearEma20 ? null : "NoPullbackEMA20",
+                bullish || bearish ? null : "NoLTFTrigger",
+                directionalStrength >= cfg.directionalStrengthThreshold ? null : "WeakDirectionalStrength",
+                coreCount >= cfg.minimumCoreRequired ? null : `Core<${cfg.minimumCoreRequired}`
             ].filter(Boolean)
         };
+    }
+
+    async function fetchModelPrediction(endpoint, payload) {
+        if (!endpoint) return null;
+        const res = await fetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error(`Predict API error: ${res.status}`);
+        return res.json();
+    }
+
+    async function fetchAiDeepDive(endpoint, payload) {
+        if (!endpoint) throw new Error("Predict API endpoint not set");
+        const aiEndpoint = endpoint.endsWith("/predict")
+            ? endpoint.replace(/\/predict$/, "/ai/deep-dive")
+            : `${endpoint.replace(/\/$/, "")}/ai/deep-dive`;
+        const res = await fetch(aiEndpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error(`AI Deep Dive API error: ${res.status}`);
+        return res.json();
+    }
+
+    function setApiState(text, ok = false) {
+        const el = document.getElementById("apiState");
+        el.textContent = text;
+        el.style.borderColor = ok ? "#2CEF9F" : "#7b2f2f";
     }
 
     function setWsState(text) {
@@ -402,17 +534,41 @@
                     <td>${rec.timeframe}</td>
                     <td class="${predClass}">${rec.direction}</td>
                     <td>${rec.confidence}%</td>
+                    <td>${rec.modelSource || "-"}</td>
                     <td>${fmt(rec.entryPrice, rec.precision)}</td>
                     <td>${rec.stopLoss == null ? "-" : fmt(rec.stopLoss, rec.precision)}</td>
                     <td>${rec.target == null ? "-" : fmt(rec.target, rec.precision)}</td>
                     <td>${fmt(rec.atr14, rec.precision)}</td>
                     <td>${fmt(rec.ema20, rec.precision)} / ${fmt(rec.ema200, rec.precision)}</td>
                     <td>${rec.session}</td>
+                    <td>${rec.horizonMin || "-"}</td>
+                    <td>${rec.mfe == null ? "-" : fmt(rec.mfe, rec.precision)}</td>
+                    <td>${rec.mae == null ? "-" : fmt(rec.mae, rec.precision)}</td>
+                    <td title="${(rec.blockers || []).join(", ")}">${(rec.blockers || []).join("|") || "-"}</td>
                     <td class="${outClass}">${rec.outcome}</td>
                     <td>${rec.resolvedAt ? new Date(rec.resolvedAt).toLocaleString() : "-"}</td>
                 `;
                 tbody.appendChild(tr);
             });
+    }
+
+    function renderWalkForward(rows) {
+        const body = document.getElementById("wfBody");
+        body.innerHTML = "";
+        rows.forEach(r => {
+            const tr = document.createElement("tr");
+            tr.innerHTML = `
+                <td>${r.mode}</td>
+                <td>${r.totalSignals}</td>
+                <td>${r.triggeredSignals}</td>
+                <td class="ok">${r.wins}</td>
+                <td class="warn">${r.losses}</td>
+                <td>${r.noHit}</td>
+                <td>${r.notTriggered}</td>
+                <td>${r.winRateResolved}%</td>
+            `;
+            body.appendChild(tr);
+        });
     }
 
     function pairPrecision(pair) {
@@ -423,19 +579,66 @@
         return 5;
     }
 
+    function aggregateCandles(candles, factor) {
+        if (!Number.isFinite(factor) || factor <= 1 || candles.length < factor) return candles;
+        const out = [];
+        for (let i = 0; i < candles.length; i += factor) {
+            const chunk = candles.slice(i, i + factor);
+            if (chunk.length < factor) continue;
+            out.push({
+                epoch: chunk[chunk.length - 1].epoch,
+                open: chunk[0].open,
+                high: Math.max(...chunk.map(c => c.high)),
+                low: Math.min(...chunk.map(c => c.low)),
+                close: chunk[chunk.length - 1].close
+            });
+        }
+        return out;
+    }
+
     async function evaluatePendingRecord(rec) {
         if (rec.outcome !== "Pending") return;
-        const derivSymbol = DERIV_SYMBOLS[rec.pair];
-        const current = await feed.fetchLatestPrice(derivSymbol);
-        if (!Number.isFinite(current)) return;
+        const candles = await feed.fetchCandles(rec.derivSymbol, rec.timeframe, 240);
+        if (!candles.length) return;
+        const entryEpoch = Math.floor(new Date(rec.timestamp).getTime() / 1000);
+        const untilEpoch = Math.floor(Math.min(Date.now(), rec.checkAtEpochMs) / 1000);
+        const window = candles.filter(c => c.epoch >= entryEpoch && c.epoch <= untilEpoch);
+        if (!window.length) return;
+
         let outcome = "No Hit";
-        if (rec.direction === "Bullish") {
-            if (current >= rec.target) outcome = "Hit Target";
-            else if (current <= rec.stopLoss) outcome = "Stop Loss";
-        } else if (rec.direction === "Bearish") {
-            if (current <= rec.target) outcome = "Hit Target";
-            else if (current >= rec.stopLoss) outcome = "Stop Loss";
+        let mfe = 0;
+        let mae = 0;
+        for (const c of window) {
+            if (rec.direction === "Bullish") {
+                const fav = c.high - rec.entryPrice;
+                const adv = rec.entryPrice - c.low;
+                mfe = Math.max(mfe, fav);
+                mae = Math.max(mae, adv);
+                if (c.low <= rec.stopLoss) {
+                    outcome = "Stop Loss";
+                    break;
+                }
+                if (c.high >= rec.target) {
+                    outcome = "Hit Target";
+                    break;
+                }
+            } else if (rec.direction === "Bearish") {
+                const fav = rec.entryPrice - c.low;
+                const adv = c.high - rec.entryPrice;
+                mfe = Math.max(mfe, fav);
+                mae = Math.max(mae, adv);
+                if (c.high >= rec.stopLoss) {
+                    outcome = "Stop Loss";
+                    break;
+                }
+                if (c.low <= rec.target) {
+                    outcome = "Hit Target";
+                    break;
+                }
+            }
         }
+        rec.mfe = Math.max(0, mfe);
+        rec.mae = Math.max(0, mae);
         if (outcome !== "No Hit" || Date.now() >= rec.checkAtEpochMs) {
             rec.outcome = outcome;
             rec.resolvedAt = nowIso();
@@ -445,21 +648,57 @@
     async function runAnalysis() {
         const pair = document.getElementById('pair').value;
         const timeframe = document.getElementById('tf').value;
-        const horizonMin = Math.max(1, Number(document.getElementById('horizon').value) || 60);
+        const mode = document.getElementById('mode').value;
+        const userHorizon = Number(document.getElementById('horizon').value) || 0;
+        const horizonMin = horizonMinutesForTf(timeframe, userHorizon);
+        const endpoint = (document.getElementById('endpoint').value || "").trim();
         const derivSymbol = DERIV_SYMBOLS[pair];
         const precision = pairPrecision(pair);
         try {
             await feed.connect();
-            const candles = await feed.fetchCandles(derivSymbol, timeframe, 240);
+            const fetchTf = timeframe === "all" ? "5m" : timeframe;
+            const fetchCount = timeframe === "all" ? 1800 : 240;
+            const candles = await feed.fetchCandles(derivSymbol, fetchTf, fetchCount);
             if (candles.length < 30) throw new Error("Not enough candles for analysis");
+            const selectedMode = timeframe === "all" ? "LENIENT" : mode;
 
-            const result = runEx57LikeAnalysis(candles, pair, timeframe);
+            let result = runEx57LikeAnalysis(candles, pair, fetchTf, selectedMode);
+            if (endpoint) {
+                try {
+                    const apiRes = await fetchModelPrediction(endpoint, { pair, timeframe: timeframe === "all" ? "topdown_all" : timeframe, mode: selectedMode, candles: candles.slice(-1800) });
+                    if (apiRes && apiRes.direction) {
+                        const stopDist = Math.max((apiRes.atr14 || result.atr14) * 0.85, result.entryPrice * 0.0012);
+                        const tgtDist = stopDist * 2.67;
+                        const entry = Number(apiRes.entryPrice ?? result.entryPrice);
+                        result = {
+                            ...result,
+                            direction: apiRes.direction,
+                            confidence: Math.max(1, Math.min(99, Number(apiRes.confidence ?? result.confidence))),
+                            entryPrice: entry,
+                            stopLoss: apiRes.direction === "Bullish" ? entry - stopDist : apiRes.direction === "Bearish" ? entry + stopDist : null,
+                            target: apiRes.direction === "Bullish" ? entry + tgtDist : apiRes.direction === "Bearish" ? entry - tgtDist : null,
+                            modelSource: "api",
+                            expectedMove: Number(apiRes.expectedMove || 0),
+                            blockers: Array.isArray(apiRes.blockers) ? apiRes.blockers : result.blockers
+                        };
+                        setApiState("API: Connected", true);
+                    } else {
+                        throw new Error("Predict API response missing 'direction'");
+                    }
+                } catch (apiErr) {
+                    setApiState(`API: Error`, false);
+                    throw new Error(`Predict API unavailable: ${apiErr.message}`);
+                }
+            } else {
+                setApiState("API: Not set", false);
+            }
             const rec = {
                 id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
                 timestamp: nowIso(),
                 pair,
                 derivSymbol,
                 timeframe,
+                mode: selectedMode,
                 precision,
                 direction: result.direction,
                 confidence: result.confidence,
@@ -471,7 +710,12 @@
                 ema200: result.ema200,
                 adx14: result.adx14,
                 session: result.session,
+                modelSource: result.modelSource || "local-gated",
+                expectedMove: result.expectedMove || 0,
                 blockers: result.blockers,
+                horizonMin,
+                mfe: null,
+                mae: null,
                 outcome: result.direction === "Neutral" ? "Blocked" : "Pending",
                 resolvedAt: result.direction === "Neutral" ? nowIso() : null,
                 checkAtEpochMs: Date.now() + horizonMin * 60 * 1000
@@ -482,6 +726,127 @@
         } catch (error) {
             alert('Error: ' + error.message);
         }
+    }
+
+    async function runAiDeepDive() {
+        const pair = document.getElementById('pair').value;
+        const timeframe = document.getElementById('tf').value;
+        const mode = document.getElementById('mode').value;
+        const endpoint = (document.getElementById('endpoint').value || "").trim();
+        if (!endpoint) {
+            alert("Set Predict API endpoint first.");
+            return;
+        }
+        const derivSymbol = DERIV_SYMBOLS[pair];
+        try {
+            await feed.connect();
+            const fetchTf = timeframe === "all" ? "5m" : timeframe;
+            const fetchCount = timeframe === "all" ? 1800 : 260;
+            const selectedMode = timeframe === "all" ? "LENIENT" : mode;
+            const candles = await feed.fetchCandles(derivSymbol, fetchTf, fetchCount);
+            const data = await fetchAiDeepDive(endpoint, { pair, timeframe: timeframe === "all" ? "topdown_all" : timeframe, mode: selectedMode, candles: candles.slice(-1800) });
+            document.getElementById("aiOutput").textContent = JSON.stringify(data, null, 2);
+            setApiState("API: Connected", true);
+        } catch (e) {
+            setApiState("API: Error", false);
+            document.getElementById("aiOutput").textContent = `AI deep dive failed: ${e.message}`;
+            alert(e.message);
+        }
+    }
+
+    function evaluateOutcomeOnFuture(direction, entry, stopLoss, target, future) {
+        const triggerIndex = future.findIndex(c => c.low <= entry && c.high >= entry);
+        if (triggerIndex < 0) return "Not Triggered";
+        for (let i = triggerIndex; i < future.length; i++) {
+            const c = future[i];
+            const stopHit = c.low <= stopLoss && c.high >= stopLoss;
+            const targetHit = c.low <= target && c.high >= target;
+            if (stopHit && targetHit) return "Loss";
+            if (direction === "Bullish") {
+                if (targetHit) return "Win";
+                if (stopHit) return "Loss";
+            } else if (direction === "Bearish") {
+                if (targetHit) return "Win";
+                if (stopHit) return "Loss";
+            }
+        }
+        return "No Hit";
+    }
+
+    async function runWalkForwardAllModes() {
+        const pair = document.getElementById('pair').value;
+        const timeframe = document.getElementById('tf').value;
+        const endpoint = (document.getElementById('endpoint').value || "").trim();
+        const wfSource = document.getElementById('wfSource').value;
+        const wfAiSample = document.getElementById('wfAiSample').value;
+        const derivSymbol = DERIV_SYMBOLS[pair];
+        const fetchTf = timeframe === "all" ? "5m" : timeframe;
+        const candles = await feed.fetchCandles(derivSymbol, fetchTf, timeframe === "all" ? 1800 : 320);
+        if (candles.length < 160) {
+            alert("Need at least 160 candles for walk-forward.");
+            return;
+        }
+        if (wfSource === "api" && !endpoint) {
+            alert("Set Predict API endpoint first for API-backed walk-forward.");
+            return;
+        }
+        const horizonBars = TF_LOOKAHEAD_BARS[timeframe] || 12;
+        const startIndex = 100;
+        const lastSignalIndex = candles.length - 1 - horizonBars;
+        const modes = Object.keys(MODE_CONFIG);
+        const scoreRows = [];
+        let deepDiveSamples = 0;
+        let apiCalls = 0;
+        for (const mode of modes) {
+            let totalSignals = 0, triggeredSignals = 0, wins = 0, losses = 0, noHit = 0, notTriggered = 0;
+            for (let i = startIndex; i <= lastSignalIndex; i++) {
+                const history = candles.slice(0, i + 1);
+                let analysis = null;
+                if (wfSource === "api") {
+                    try {
+                        apiCalls += 1;
+                        const apiRes = await fetchModelPrediction(endpoint, { pair, timeframe: timeframe === "all" ? "topdown_all" : timeframe, mode: timeframe === "all" ? "LENIENT" : mode, candles: history.slice(-(timeframe === "all" ? 1800 : 260)) });
+                        const localRef = runEx57LikeAnalysis(history, pair, fetchTf, timeframe === "all" ? "LENIENT" : mode);
+                        const stopDist = Math.max((apiRes.atr14 || localRef.atr14) * 0.85, localRef.entryPrice * 0.0012);
+                        const targetDist = stopDist * 2.67;
+                        const entry = Number(apiRes.entryPrice ?? localRef.entryPrice);
+                        analysis = {
+                            direction: apiRes.direction || "Neutral",
+                            entryPrice: entry,
+                            stopLoss: (apiRes.direction === "Bullish") ? entry - stopDist : (apiRes.direction === "Bearish" ? entry + stopDist : null),
+                            target: (apiRes.direction === "Bullish") ? entry + targetDist : (apiRes.direction === "Bearish" ? entry - targetDist : null)
+                        };
+                        if (wfAiSample === "sample" && deepDiveSamples < 8 && i % 25 === 0) {
+                            try {
+                                const dd = await fetchAiDeepDive(endpoint, { pair, timeframe: timeframe === "all" ? "topdown_all" : timeframe, mode: timeframe === "all" ? "LENIENT" : mode, candles: history.slice(-(timeframe === "all" ? 1800 : 260)) });
+                                deepDiveSamples += 1;
+                                document.getElementById("aiOutput").textContent = JSON.stringify(dd, null, 2);
+                            } catch (_) {}
+                        }
+                    } catch (e) {
+                        setApiState("API: Error", false);
+                        throw new Error(`WF API step failed (${mode} @ ${i}): ${e.message}`);
+                    }
+                } else {
+                    analysis = runEx57LikeAnalysis(history, pair, fetchTf, timeframe === "all" ? "LENIENT" : mode);
+                }
+                if (analysis.direction === "Neutral" || !analysis.stopLoss || !analysis.target) continue;
+                totalSignals += 1;
+                const future = candles.slice(i + 1, i + 1 + horizonBars);
+                const outcome = evaluateOutcomeOnFuture(analysis.direction, analysis.entryPrice, analysis.stopLoss, analysis.target, future);
+                if (outcome === "Win") { wins += 1; triggeredSignals += 1; }
+                else if (outcome === "Loss") { losses += 1; triggeredSignals += 1; }
+                else if (outcome === "No Hit") { noHit += 1; triggeredSignals += 1; }
+                else if (outcome === "Not Triggered") { notTriggered += 1; }
+            }
+            const resolved = wins + losses;
+            const winRateResolved = resolved === 0 ? 0 : Math.round((wins / resolved) * 100);
+            scoreRows.push({ mode, totalSignals, triggeredSignals, wins, losses, noHit, notTriggered, winRateResolved });
+        }
+        renderWalkForward(scoreRows);
+        document.getElementById("wfMeta").textContent =
+            `WF source=${wfSource.toUpperCase()} | modes=${modes.length} | candles=${candles.length} | horizonBars=${horizonBars} | apiCalls=${apiCalls} | deepDiveSamples=${deepDiveSamples}`;
+        if (wfSource === "api") setApiState("API: Connected", true);
     }
 
     async function evaluatePending() {
@@ -543,10 +908,16 @@
     }
 
     document.getElementById('runBtn').addEventListener('click', runAnalysis);
+    document.getElementById('aiBtn').addEventListener('click', runAiDeepDive);
+    document.getElementById('wfBtn').addEventListener('click', runWalkForwardAllModes);
     document.getElementById('autoBtn').addEventListener('click', toggleAutoRun);
     document.getElementById('clearBtn').addEventListener('click', clearLogs);
     document.getElementById('exportBtn').addEventListener('click', exportJson);
     document.getElementById('pair').addEventListener('change', initLiveTicker);
+    document.getElementById('endpoint').addEventListener('input', () => {
+        const endpoint = (document.getElementById('endpoint').value || "").trim();
+        setApiState(endpoint ? "API: Set (not tested)" : "API: Not set", false);
+    });
 
     (async function boot() {
         loadRecords();
