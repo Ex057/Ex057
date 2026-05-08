@@ -190,6 +190,11 @@ internal object StrategyEvaluator {
         val modelDispersionPenalty = forecastModelMetrics.forecastDispersion * 0.55
         val sessionBonus = features.sessionContext.sessionScore * 0.35
         val sessionPenalty = if (features.sessionContext.isQuietSession) 0.28 else 0.0
+        val goldTrendFilterPassed = features.adx14H4 > 25.0 && features.priceAbove200Ema
+        val goldTriggerFilterPassed = features.touches20Ema
+        val goldSessionFilterPassed = features.sessionContext.isLondonOpen || features.sessionContext.isLondonNyOverlap
+        val goldPatternFilterBull = features.h4BullEngulfing && (features.m5BullEngulfing || features.beltHold || features.longLine)
+        val goldPatternFilterBear = features.h4BearEngulfing && (features.m5BearEngulfing || features.beltHold || features.longLine)
         val todayTradeStats = buildTodayTradeStats(
             symbolCode = symbol.code,
             timeframe = input.timeframe,
@@ -368,7 +373,11 @@ internal object StrategyEvaluator {
             modelConfidenceGatePassed &&
             modelDispersionGatePassed &&
             targetBeforeStopGatePassed &&
-            setupStateGatePassed
+            setupStateGatePassed &&
+            goldTrendFilterPassed &&
+            goldTriggerFilterPassed &&
+            goldSessionFilterPassed &&
+            (if (bestCandidate.bias == TradeBias.BULLISH) goldPatternFilterBull else if (bestCandidate.bias == TradeBias.BEARISH) goldPatternFilterBear else true)
         ) {
             bestCandidate.bias
         } else {
@@ -423,7 +432,11 @@ internal object StrategyEvaluator {
             targetBeforeStopGatePassed &&
             riskPenaltyGatePassed &&
             historyGatePassed &&
-            !dailyTradeCapReached
+            !dailyTradeCapReached &&
+            goldTrendFilterPassed &&
+            goldTriggerFilterPassed &&
+            goldSessionFilterPassed &&
+            (if (bias == TradeBias.BULLISH) goldPatternFilterBull else if (bias == TradeBias.BEARISH) goldPatternFilterBear else true)
         val expectancyGatePassed = if (!filterSettings.requireExpectancy) {
             true
         } else {
@@ -512,6 +525,14 @@ internal object StrategyEvaluator {
             targetBeforeStopScore = forecastModelMetrics.targetBeforeStopScore,
             targetBeforeStopThreshold = targetBeforeStopThreshold,
             setupStateAllowed = setupStateGatePassed,
+            adx14H4 = features.adx14H4,
+            priceAbove200Ema = features.priceAbove200Ema,
+            touches20Ema = features.touches20Ema,
+            trendFilterPassed = goldTrendFilterPassed,
+            triggerFilterPassed = goldTriggerFilterPassed,
+            sessionFilterPassed = goldSessionFilterPassed,
+            patternFilterBullPassed = goldPatternFilterBull,
+            patternFilterBearPassed = goldPatternFilterBear,
             sessionLabel = features.sessionContext.sessionLabel,
             quietSession = features.sessionContext.isQuietSession,
             londonOverlap = features.sessionContext.isLondonNyOverlap,
@@ -727,6 +748,14 @@ internal object StrategyEvaluator {
         targetBeforeStopScore: Double,
         targetBeforeStopThreshold: Double,
         setupStateAllowed: Boolean,
+        adx14H4: Double,
+        priceAbove200Ema: Boolean,
+        touches20Ema: Boolean,
+        trendFilterPassed: Boolean,
+        triggerFilterPassed: Boolean,
+        sessionFilterPassed: Boolean,
+        patternFilterBullPassed: Boolean,
+        patternFilterBearPassed: Boolean,
         sessionLabel: String,
         quietSession: Boolean,
         londonOverlap: Boolean,
@@ -786,6 +815,22 @@ internal object StrategyEvaluator {
         }
         if (filterSettings.requireSetupState && !setupStateAllowed) {
             reasons += "Current setup/trigger state is not valid for this mode."
+        }
+        if (!trendFilterPassed) {
+            reasons += "Gold trend filter failed: ADX(4H) ${"%.1f".format(adx14H4)} must be > 25 and price must hold above 200 EMA."
+        } else if (!priceAbove200Ema) {
+            reasons += "Price is below the 200 EMA trend filter."
+        }
+        if (!triggerFilterPassed) {
+            reasons += "Price has not touched the 20 EMA trigger zone yet."
+        } else if (!touches20Ema) {
+            reasons += "20 EMA touch trigger is not active."
+        }
+        if (!sessionFilterPassed) {
+            reasons += "Setup is outside London open/NY overlap session windows."
+        }
+        if (!patternFilterBullPassed && !patternFilterBearPassed) {
+            reasons += "Pattern filter failed: need H4 engulfing plus M5 engulfing/long-line/belt-hold confirmation."
         }
         if (quietSession) {
             reasons += "Current candle is in a quiet gold session ($sessionLabel); setups are downgraded unless momentum is exceptional."

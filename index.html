@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>EX57 Real‑Time Validation Dashboard</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            background-color: #050912;
+            color: #F9FAFB;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 1120px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1 {
+            margin: 0 0 12px 0;
+        }
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .controls select, .controls button, .controls input {
+            padding: 8px 12px;
+            border: none;
+            border-radius: 4px;
+            font-size: 16px;
+            background: #101828;
+            color: #F9FAFB;
+            border: 1px solid #2a2f45;
+        }
+        .controls button {
+            cursor: pointer;
+        }
+        .status {
+            margin-bottom: 12px;
+            font-size: 14px;
+            color: #AFC6D8;
+        }
+        .pill {
+            display: inline-block;
+            background: #0c1323;
+            border: 1px solid #2a2f45;
+            border-radius: 999px;
+            padding: 4px 10px;
+            margin-right: 8px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        th, td {
+            border-bottom: 1px solid #2a2f45;
+            padding: 8px;
+            text-align: left;
+            white-space: nowrap;
+        }
+        th {
+            background-color: #101828;
+        }
+        tr:nth-child(even) {
+            background-color: #0c1323;
+        }
+        .bullish { color: #2CEF9F; }
+        .bearish { color: #FF7066; }
+        .neutral { color: #AFC6D8; }
+        .ok { color: #2CEF9F; }
+        .warn { color: #FF7066; }
+        .dim { color: #8FA2B2; }
+        .small { font-size: 12px; color: #8FA2B2; }
+        .grow { flex: 1 1 auto; min-width: 160px; }
+        .danger { background: #3a1414; border-color: #7b2f2f; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>EX57 Real-Time Validation (Deriv Feed)</h1>
+    <div class="status">
+        <span class="pill" id="wsState">WS: Disconnected</span>
+        <span class="pill" id="livePrice">Live: -</span>
+        <span class="pill" id="activePair">Pair: XAUUSD</span>
+        <span class="pill" id="recordsCount">Records: 0</span>
+    </div>
+    <div class="controls">
+        <label for="pair">Pair</label>
+        <select id="pair">
+            <option value="XAUUSD">XAUUSD (Gold)</option>
+            <option value="BTCUSD">BTCUSD (Bitcoin)</option>
+            <option value="EURUSD">EURUSD</option>
+            <option value="GBPUSD">GBPUSD</option>
+            <option value="USDJPY">USDJPY</option>
+            <option value="AUDUSD">AUDUSD</option>
+            <option value="USDCHF">USDCHF</option>
+            <option value="ETHUSD">ETHUSD (Ethereum)</option>
+            <option value="VOL10">VOL10</option>
+            <option value="VOL50">VOL50</option>
+            <option value="VOL75">VOL75</option>
+            <option value="VOL100">VOL100</option>
+        </select>
+        <label for="tf">TF</label>
+        <select id="tf">
+            <option value="1m">1m</option>
+            <option value="5m">5m</option>
+            <option value="15m" selected>15m</option>
+            <option value="30m">30m</option>
+            <option value="1h">1h</option>
+            <option value="4h">4h</option>
+            <option value="1d">1d</option>
+        </select>
+        <label for="horizon">Horizon (min)</label>
+        <input id="horizon" type="number" min="1" value="60" style="width: 100px;">
+        <button id="runBtn">Run Analysis</button>
+        <button id="autoBtn">Start Auto Run (5m)</button>
+        <button id="clearBtn" class="danger">Clear Logs</button>
+        <button id="exportBtn">Export JSON</button>
+        <span class="small grow">Runs locally. Replace <code>runEx57LikeAnalysis</code> with your pipeline endpoint later.</span>
+    </div>
+    <div class="small" style="margin-bottom: 8px;">
+        Strategy checks simulated here: EMA20/EMA200 trend, ATR stop distance, session bonus (London/NY overlap), and fixed RR 1:2.67.
+    </div>
+    <table>
+        <thead>
+        <tr>
+            <th>Timestamp</th>
+            <th>Pair</th>
+            <th>TF</th>
+            <th>Prediction</th>
+            <th>Confidence</th>
+            <th>Entry Price</th>
+            <th>Stop Loss</th>
+            <th>Target</th>
+            <th>ATR</th>
+            <th>EMA20/200</th>
+            <th>Session</th>
+            <th>Outcome</th>
+            <th>Resolved At</th>
+        </tr>
+        </thead>
+        <tbody id="logBody">
+        <!-- logs will be appended here -->
+        </tbody>
+    </table>
+</div>
+
+<script>
+    const APP_ID = "1089";
+    const DERIV_SYMBOLS = {
+        XAUUSD: "frxXAUUSD",
+        BTCUSD: "cryBTCUSD",
+        ETHUSD: "cryETHUSD",
+        EURUSD: "frxEURUSD",
+        GBPUSD: "frxGBPUSD",
+        USDJPY: "frxUSDJPY",
+        AUDUSD: "frxAUDUSD",
+        USDCHF: "frxUSDCHF",
+        VOL10: "R_10",
+        VOL50: "R_50",
+        VOL75: "R_75",
+        VOL100: "R_100"
+    };
+    const TF_SECONDS = { "1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400 };
+    const STORE_KEY = "ex57_validation_records_v1";
+
+    class DerivFeed {
+        constructor(appId) {
+            this.appId = appId;
+            this.ws = null;
+            this.connected = false;
+            this.reqId = 1;
+            this.pending = new Map();
+            this.tickSubs = new Map();
+            this.lastPriceBySymbol = new Map();
+        }
+
+        connect() {
+            if (this.connected && this.ws) return Promise.resolve();
+            return new Promise((resolve, reject) => {
+                this.ws = new WebSocket(`wss://ws.binaryws.com/websockets/v3?app_id=${this.appId}`);
+                this.ws.onopen = () => {
+                    this.connected = true;
+                    setWsState("WS: Connected");
+                    resolve();
+                };
+                this.ws.onerror = (e) => {
+                    setWsState("WS: Error");
+                    reject(new Error("WebSocket error"));
+                };
+                this.ws.onclose = () => {
+                    this.connected = false;
+                    setWsState("WS: Disconnected");
+                };
+                this.ws.onmessage = (event) => this.handleMessage(event.data);
+            });
+        }
+
+        handleMessage(raw) {
+            const msg = JSON.parse(raw);
+            if (msg.req_id && this.pending.has(msg.req_id)) {
+                const { resolve, reject } = this.pending.get(msg.req_id);
+                this.pending.delete(msg.req_id);
+                if (msg.error) reject(new Error(msg.error.message || "Deriv error"));
+                else resolve(msg);
+                return;
+            }
+            if (msg.msg_type === "tick" && msg.tick) {
+                const symbol = msg.tick.symbol;
+                const price = Number(msg.tick.quote);
+                this.lastPriceBySymbol.set(symbol, price);
+                const cb = this.tickSubs.get(symbol);
+                if (cb) cb(price);
+            }
+        }
+
+        sendRequest(payload) {
+            return new Promise((resolve, reject) => {
+                const id = this.reqId++;
+                this.pending.set(id, { resolve, reject });
+                this.ws.send(JSON.stringify({ ...payload, req_id: id }));
+            });
+        }
+
+        async subscribeTicks(symbol, onTick) {
+            await this.connect();
+            this.tickSubs.set(symbol, onTick);
+            await this.sendRequest({ ticks: symbol, subscribe: 1 });
+        }
+
+        async fetchLatestPrice(symbol) {
+            await this.connect();
+            const msg = await this.sendRequest({ ticks_history: symbol, count: 1, end: "latest", style: "ticks" });
+            const p = Number(msg.history?.prices?.[0]);
+            if (Number.isFinite(p)) this.lastPriceBySymbol.set(symbol, p);
+            return p;
+        }
+
+        async fetchCandles(symbol, timeframe, count = 220) {
+            await this.connect();
+            const granularity = TF_SECONDS[timeframe] || 900;
+            const msg = await this.sendRequest({
+                ticks_history: symbol,
+                adjust_start_time: 1,
+                count,
+                end: "latest",
+                granularity,
+                style: "candles"
+            });
+            const candles = (msg.candles || []).map(c => ({
+                epoch: Number(c.epoch),
+                open: Number(c.open),
+                high: Number(c.high),
+                low: Number(c.low),
+                close: Number(c.close)
+            })).filter(c => Number.isFinite(c.close));
+            return candles;
+        }
+    }
+
+    const feed = new DerivFeed(APP_ID);
+    const state = {
+        records: [],
+        autoRun: false,
+        autoTimer: null
+    };
+
+    function nowIso() {
+        return new Date().toISOString();
+    }
+
+    function sessionLabelUtc() {
+        const hour = new Date().getUTCHours();
+        if (hour >= 7 && hour <= 9) return "London Open";
+        if (hour >= 13 && hour <= 16) return "London-NY Overlap";
+        if (hour >= 0 && hour <= 5) return "Asia Quiet";
+        return "Transition";
+    }
+
+    function mean(arr) {
+        if (!arr.length) return 0;
+        return arr.reduce((a, b) => a + b, 0) / arr.length;
+    }
+
+    function ema(values, period) {
+        if (!values.length) return 0;
+        const alpha = 2 / (period + 1);
+        let out = values[0];
+        for (let i = 1; i < values.length; i++) out = values[i] * alpha + out * (1 - alpha);
+        return out;
+    }
+
+    function atr(candles, period = 14) {
+        if (candles.length < 3) return 0;
+        const trs = [];
+        for (let i = 1; i < candles.length; i++) {
+            const p = candles[i - 1], c = candles[i];
+            trs.push(Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close)));
+        }
+        return mean(trs.slice(-period));
+    }
+
+    function adxProxy(candles, period = 14) {
+        if (candles.length < period + 2) return 15;
+        const moves = [];
+        for (let i = candles.length - period; i < candles.length; i++) {
+            const prev = candles[i - 1], curr = candles[i];
+            moves.push(curr.close - prev.close);
+        }
+        const directional = Math.abs(moves.reduce((a, b) => a + b, 0));
+        const vol = moves.reduce((a, b) => a + Math.abs(b), 0) || 1e-6;
+        return Math.max(0, Math.min(100, (directional / vol) * 100));
+    }
+
+    function runEx57LikeAnalysis(candles, pair, timeframe) {
+        const closes = candles.map(c => c.close);
+        const entry = closes[closes.length - 1];
+        const ema20 = ema(closes.slice(-220), 20);
+        const ema200 = ema(closes.slice(-220), 200);
+        const atr14 = atr(candles.slice(-220), 14);
+        const adx14 = adxProxy(candles.slice(-220), 14);
+        const session = sessionLabelUtc();
+
+        const bullish = entry >= ema200 && entry >= ema20;
+        const bearish = entry < ema200 && entry <= ema20;
+        const trendOk = adx14 > 25;
+        const sessionOk = session === "London Open" || session === "London-NY Overlap";
+
+        let direction = "Neutral";
+        if (trendOk && sessionOk) direction = bullish ? "Bullish" : (bearish ? "Bearish" : "Neutral");
+
+        const stopDist = Math.max(atr14 * 0.85, entry * 0.0012);
+        const targetDist = stopDist * 2.67;
+        const stopLoss = direction === "Bullish" ? entry - stopDist : direction === "Bearish" ? entry + stopDist : null;
+        const target = direction === "Bullish" ? entry + targetDist : direction === "Bearish" ? entry - targetDist : null;
+
+        let confidence = 42;
+        confidence += trendOk ? 16 : -8;
+        confidence += sessionOk ? 12 : -6;
+        confidence += bullish || bearish ? 10 : -5;
+        confidence = Math.max(20, Math.min(89, confidence));
+
+        return {
+            direction,
+            confidence,
+            entryPrice: entry,
+            stopLoss,
+            target,
+            atr14,
+            ema20,
+            ema200,
+            adx14,
+            session,
+            blockers: [
+                trendOk ? null : "ADX<=25",
+                sessionOk ? null : "Session"
+            ].filter(Boolean)
+        };
+    }
+
+    function setWsState(text) {
+        document.getElementById("wsState").textContent = text;
+    }
+
+    function saveRecords() {
+        localStorage.setItem(STORE_KEY, JSON.stringify(state.records));
+        document.getElementById("recordsCount").textContent = `Records: ${state.records.length}`;
+    }
+
+    function loadRecords() {
+        try {
+            const raw = localStorage.getItem(STORE_KEY);
+            state.records = raw ? JSON.parse(raw) : [];
+        } catch (_) {
+            state.records = [];
+        }
+        renderTable();
+        saveRecords();
+    }
+
+    function fmt(v, d = 2) {
+        return Number.isFinite(v) ? v.toFixed(d) : "-";
+    }
+
+    function renderTable() {
+        const tbody = document.getElementById("logBody");
+        tbody.innerHTML = "";
+        state.records
+            .slice()
+            .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+            .forEach(rec => {
+                const tr = document.createElement("tr");
+                const predClass = rec.direction === "Bullish" ? "bullish" : rec.direction === "Bearish" ? "bearish" : "neutral";
+                const outClass = rec.outcome === "Hit Target" ? "ok" : rec.outcome === "Stop Loss" ? "warn" : "dim";
+                tr.innerHTML = `
+                    <td>${new Date(rec.timestamp).toLocaleString()}</td>
+                    <td>${rec.pair}</td>
+                    <td>${rec.timeframe}</td>
+                    <td class="${predClass}">${rec.direction}</td>
+                    <td>${rec.confidence}%</td>
+                    <td>${fmt(rec.entryPrice, rec.precision)}</td>
+                    <td>${rec.stopLoss == null ? "-" : fmt(rec.stopLoss, rec.precision)}</td>
+                    <td>${rec.target == null ? "-" : fmt(rec.target, rec.precision)}</td>
+                    <td>${fmt(rec.atr14, rec.precision)}</td>
+                    <td>${fmt(rec.ema20, rec.precision)} / ${fmt(rec.ema200, rec.precision)}</td>
+                    <td>${rec.session}</td>
+                    <td class="${outClass}">${rec.outcome}</td>
+                    <td>${rec.resolvedAt ? new Date(rec.resolvedAt).toLocaleString() : "-"}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+    }
+
+    function pairPrecision(pair) {
+        if (pair === "USDJPY") return 3;
+        if (pair.startsWith("VOL")) return 2;
+        if (pair.includes("BTC") || pair.includes("ETH")) return 2;
+        if (pair === "XAUUSD") return 2;
+        return 5;
+    }
+
+    async function evaluatePendingRecord(rec) {
+        if (rec.outcome !== "Pending") return;
+        const derivSymbol = DERIV_SYMBOLS[rec.pair];
+        const current = await feed.fetchLatestPrice(derivSymbol);
+        if (!Number.isFinite(current)) return;
+        let outcome = "No Hit";
+        if (rec.direction === "Bullish") {
+            if (current >= rec.target) outcome = "Hit Target";
+            else if (current <= rec.stopLoss) outcome = "Stop Loss";
+        } else if (rec.direction === "Bearish") {
+            if (current <= rec.target) outcome = "Hit Target";
+            else if (current >= rec.stopLoss) outcome = "Stop Loss";
+        }
+        if (outcome !== "No Hit" || Date.now() >= rec.checkAtEpochMs) {
+            rec.outcome = outcome;
+            rec.resolvedAt = nowIso();
+        }
+    }
+
+    async function runAnalysis() {
+        const pair = document.getElementById('pair').value;
+        const timeframe = document.getElementById('tf').value;
+        const horizonMin = Math.max(1, Number(document.getElementById('horizon').value) || 60);
+        const derivSymbol = DERIV_SYMBOLS[pair];
+        const precision = pairPrecision(pair);
+        try {
+            await feed.connect();
+            const candles = await feed.fetchCandles(derivSymbol, timeframe, 240);
+            if (candles.length < 30) throw new Error("Not enough candles for analysis");
+
+            const result = runEx57LikeAnalysis(candles, pair, timeframe);
+            const rec = {
+                id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                timestamp: nowIso(),
+                pair,
+                derivSymbol,
+                timeframe,
+                precision,
+                direction: result.direction,
+                confidence: result.confidence,
+                entryPrice: result.entryPrice,
+                stopLoss: result.stopLoss,
+                target: result.target,
+                atr14: result.atr14,
+                ema20: result.ema20,
+                ema200: result.ema200,
+                adx14: result.adx14,
+                session: result.session,
+                blockers: result.blockers,
+                outcome: result.direction === "Neutral" ? "Blocked" : "Pending",
+                resolvedAt: result.direction === "Neutral" ? nowIso() : null,
+                checkAtEpochMs: Date.now() + horizonMin * 60 * 1000
+            };
+            state.records.push(rec);
+            renderTable();
+            saveRecords();
+        } catch (error) {
+            alert('Error: ' + error.message);
+        }
+    }
+
+    async function evaluatePending() {
+        const pendings = state.records.filter(r => r.outcome === "Pending");
+        for (const rec of pendings) {
+            try {
+                await evaluatePendingRecord(rec);
+            } catch (e) {
+                console.error("Outcome eval error", e);
+            }
+        }
+        renderTable();
+        saveRecords();
+    }
+
+    async function initLiveTicker() {
+        const pair = document.getElementById("pair").value;
+        const derivSymbol = DERIV_SYMBOLS[pair];
+        document.getElementById("activePair").textContent = `Pair: ${pair}`;
+        await feed.subscribeTicks(derivSymbol, (price) => {
+            const p = pairPrecision(pair);
+            document.getElementById("livePrice").textContent = `Live: ${price.toFixed(p)}`;
+        });
+        const latest = await feed.fetchLatestPrice(derivSymbol);
+        if (Number.isFinite(latest)) {
+            const p = pairPrecision(pair);
+            document.getElementById("livePrice").textContent = `Live: ${latest.toFixed(p)}`;
+        }
+    }
+
+    function exportJson() {
+        const blob = new Blob([JSON.stringify(state.records, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "ex57_validation_records.json";
+        a.click();
+        URL.revokeObjectURL(url);
+    }
+
+    function toggleAutoRun() {
+        state.autoRun = !state.autoRun;
+        const btn = document.getElementById("autoBtn");
+        if (state.autoRun) {
+            btn.textContent = "Stop Auto Run";
+            state.autoTimer = setInterval(runAnalysis, 5 * 60 * 1000);
+        } else {
+            btn.textContent = "Start Auto Run (5m)";
+            if (state.autoTimer) clearInterval(state.autoTimer);
+            state.autoTimer = null;
+        }
+    }
+
+    function clearLogs() {
+        if (!confirm("Clear all validation records?")) return;
+        state.records = [];
+        renderTable();
+        saveRecords();
+    }
+
+    document.getElementById('runBtn').addEventListener('click', runAnalysis);
+    document.getElementById('autoBtn').addEventListener('click', toggleAutoRun);
+    document.getElementById('clearBtn').addEventListener('click', clearLogs);
+    document.getElementById('exportBtn').addEventListener('click', exportJson);
+    document.getElementById('pair').addEventListener('change', initLiveTicker);
+
+    (async function boot() {
+        loadRecords();
+        await initLiveTicker();
+        setInterval(evaluatePending, 60 * 1000);
+    })().catch(err => {
+        setWsState("WS: Failed");
+        console.error(err);
+        alert("Failed to initialize Deriv WebSocket: " + err.message);
+    });
+</script>
+</body>
+</html>

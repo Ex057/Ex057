@@ -73,6 +73,7 @@ internal object RiskManager {
             approved = evaluation.approved,
             last = features.last,
             averageStep = features.averageStep,
+            atr14H1 = features.atr14H1,
             noiseRatio = features.noiseRatio,
             noiseCeiling = features.noiseCeiling,
             supportLevel = features.topDown.supportLevel,
@@ -132,18 +133,24 @@ internal object RiskManager {
         approved: Boolean,
         last: Double,
         averageStep: Double,
+        atr14H1: Double,
         noiseRatio: Double,
         noiseCeiling: Double,
         supportLevel: Double?,
         resistanceLevel: Double?
     ): TradeSetup {
         val spreadBuffer = maxOf(symbol.spec.typicalSpread * 1.1, averageStep * 0.18)
-        val baseRisk = (
+        val genericBaseRisk = (
             averageStep * (2.0 + (noiseRatio / noiseCeiling).coerceAtMost(1.2))
             ).coerceAtLeast(maxOf(last * 0.0015, spreadBuffer * 2.5))
+        val baseRisk = if (symbol.code == "XAUUSD") {
+            (atr14H1 * 0.85).coerceAtLeast(genericBaseRisk * 0.65)
+        } else {
+            genericBaseRisk
+        }
         val baseRewardMultiplier = AnalysisSupport.configFor(mode).rewardMultiplier
         val rewardMultiplier = if (symbol.code == "XAUUSD") {
-            baseRewardMultiplier.coerceIn(2.5, 3.0)
+            2.67
         } else {
             baseRewardMultiplier
         }

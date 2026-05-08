@@ -564,7 +564,13 @@ fun EX57App(
 
     Scaffold(
         containerColor = Color.Transparent,
-        contentWindowInsets = WindowInsets(0, 0, 0, 0)
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        bottomBar = {
+            FloatingBottomNav(
+                selectedTab = selectedTab,
+                onTabSelected = { selectedTab = it }
+            )
+        }
     ) { padding ->
         Box(
             modifier = Modifier
@@ -696,13 +702,6 @@ fun EX57App(
                     )
                 }
             }
-            FloatingBottomNav(
-                selectedTab = selectedTab,
-                onTabSelected = { selectedTab = it },
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 8.dp)
-            )
         }
     }
 }
@@ -1928,6 +1927,13 @@ private fun ChartsPanel(
     onAnalyzeMarket: () -> Unit,
     isAnalyzingMarket: Boolean
 ) {
+    val darkTheme = androidx.compose.foundation.isSystemInDarkTheme()
+    LaunchedEffect(selectedSymbol.derivSymbol, selectedTimeframe) {
+        while (true) {
+            onAnalyzeMarket()
+            kotlinx.coroutines.delay(12_000L)
+        }
+    }
     val selectedTfCandles = remember(candleStack, candles, selectedTimeframe) {
         candleStack[selectedTimeframe].orEmpty().ifEmpty { candles }
     }
@@ -1961,8 +1967,8 @@ private fun ChartsPanel(
     }
     val isLiveFeed = connectedFeed == selectedSymbol.derivSymbol
     Surface(
-        color = Color(0xFFF1F1F1),
-        contentColor = Color(0xFF2B2B2B),
+        color = if (darkTheme) Color(0xFF121212) else Color(0xFFF1F1F1),
+        contentColor = if (darkTheme) Color(0xFFF2EFE8) else Color(0xFF2B2B2B),
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
@@ -1991,24 +1997,36 @@ private fun ChartsPanel(
                     } ?: 0.0
                     Text(
                         "${selectedSymbol.label}  ${formatPercentSigned(rangePct)}",
-                        color = Color(0xFF2E7D32),
+                        color = if (rangePct >= 0.0) Color(0xFF5FAF3B) else Color(0xFFCC5959),
                         fontSize = 11.sp
                     )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         "Bid/Ask: ${livePrice?.let(::formatDisplayPrice) ?: "-"}/${livePrice?.let(::formatDisplayPrice) ?: "-"}",
-                        color = Color(0xFF555555),
+                        color = if (darkTheme) Color(0xFFB8A98A) else Color(0xFF555555),
                         fontSize = 11.sp
                     )
                     ChartActionButton(
                         icon = Icons.Outlined.Refresh,
                         label = if (isAnalyzingMarket) "Refreshing" else "Refresh",
-                        tint = Color(0xFF455A64),
+                        tint = Color(0xFFC5A059),
                         onClick = onAnalyzeMarket
                     )
                 }
             }
+            val nowHourUtc = java.time.Instant.now().atZone(java.time.ZoneId.of("UTC")).hour
+            val sessionAdvice = when {
+                nowHourUtc in 7..9 -> "Best entry window: London open active (07:00-09:00 UTC)"
+                nowHourUtc in 13..16 -> "Best entry window: London-NY overlap active (13:00-16:00 UTC)"
+                else -> "Lower probability window now. Prefer London open or NY overlap."
+            }
+            Text(
+                sessionAdvice,
+                modifier = Modifier.padding(horizontal = 14.dp),
+                color = if (nowHourUtc in 7..9 || nowHourUtc in 13..16) Color(0xFF8D6A2B) else Color(0xFF9B8E77),
+                fontSize = 11.sp
+            )
             Spacer(modifier = Modifier.height(6.dp))
             Row(
                 modifier = Modifier
@@ -2083,15 +2101,18 @@ private fun ChartsPanel(
                     .fillMaxWidth()
                     .weight(1f)
                     .padding(horizontal = 14.dp, vertical = 6.dp)
-                    .background(Color(0xFFF8F8F8), RoundedCornerShape(2.dp))
-                    .border(1.dp, Color(0xFFBDBDBD), RoundedCornerShape(2.dp))
+                    .background(if (darkTheme) Color(0xFF1B1713) else Color(0xFFF8F8F8), RoundedCornerShape(2.dp))
+                    .border(1.dp, if (darkTheme) Color(0xFF5D4B33) else Color(0xFFBDBDBD), RoundedCornerShape(2.dp))
             ) {
                 if (chartCandles.size > 1) {
                     PriceChart(
                         candles = chartCandles,
                         overlays = overlays,
                         analysisResult = analysisResult,
+                        livePrice = livePrice,
+                        bidPrice = livePrice?.minus(selectedSymbol.spec.typicalSpread / 2.0),
                         pricePrecision = selectedSymbol.spec.pricePrecision,
+                        darkTheme = darkTheme,
                         showFastTrend = true,
                         showSlowTrend = true,
                         showBiasLine = true,
@@ -2106,10 +2127,10 @@ private fun ChartsPanel(
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .background(Color(0xFFF8F8F8)),
+                            .background(if (darkTheme) Color(0xFF1B1713) else Color(0xFFF8F8F8)),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text("Connect feed and analyze to load chart.", color = Color(0xFF888888), fontSize = 13.sp)
+                        Text("Connect feed and analyze to load chart.", color = if (darkTheme) Color(0xFF9B8E77) else Color(0xFF888888), fontSize = 13.sp)
                     }
                 }
             }
@@ -2575,7 +2596,10 @@ private fun PriceChart(
     candles: List<PriceCandle>,
     overlays: ChartOverlayState,
     analysisResult: AnalysisResult?,
+    livePrice: Double?,
+    bidPrice: Double?,
     pricePrecision: Int,
+    darkTheme: Boolean,
     showFastTrend: Boolean,
     showSlowTrend: Boolean,
     showBiasLine: Boolean,
@@ -2584,13 +2608,13 @@ private fun PriceChart(
     onPinchZoom: ((Float) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    val outlineColor = Color(0xFFAFAFAF)
+    val outlineColor = if (darkTheme) Color(0xFF6A553A) else Color(0xFFAFAFAF)
     val bullishCandleColor = Color(0xFF61C34E)
     val bearishCandleColor = Color(0xFFE74C3C)
-    val wickColor = Color(0xFF9A9A9A)
-    val fastLineColor = Color(0xFF8AA3B2)
-    val slowLineColor = Color(0xFFBBC7D1)
-    val biasLineColor = Color(0xFF5E8AB3).copy(alpha = 0.65f)
+    val wickColor = if (darkTheme) Color(0xFFB89B73) else Color(0xFF9A9A9A)
+    val fastLineColor = if (darkTheme) Color(0xFFE0C180) else Color(0xFF8AA3B2)
+    val slowLineColor = if (darkTheme) Color(0xFFC5A059) else Color(0xFFBBC7D1)
+    val biasLineColor = if (darkTheme) Color(0xFFD6B170).copy(alpha = 0.65f) else Color(0xFF5E8AB3).copy(alpha = 0.65f)
     val entryLineColor = Color(0xFFEFC14A)
     val stopLineColor = Color(0xFFDF7B73)
     val targetLineColor = Color(0xFF79BF67)
@@ -2659,7 +2683,7 @@ private fun PriceChart(
                 val topInset = size.height * 0.16f
                 val bottomInset = size.height * 0.10f
                 val drawableHeight = (size.height - topInset - bottomInset).coerceAtLeast(1f)
-                val gridColor = Color(0xFFCFCFCF)
+                val gridColor = if (darkTheme) Color(0xFF4A3A28) else Color(0xFFCFCFCF)
 
                 fun yFor(value: Double): Float {
                     val normalized = ((topValue - value) / range).toFloat().coerceIn(0f, 1f)
@@ -2725,6 +2749,8 @@ private fun PriceChart(
                         strokeWidth = 3f
                     )
                 }
+                drawLevel(livePrice, Color(0xFF2F80ED))
+                drawLevel(bidPrice, Color(0xFFD64545))
 
                 if (showFastTrend) {
                     drawSeries(overlays.fastTrend, fastLineColor, 3f)
@@ -2780,20 +2806,32 @@ private fun PriceChart(
         Column(
             modifier = Modifier
                 .align(Alignment.CenterEnd)
-                .padding(end = 4.dp),
-            verticalArrangement = Arrangement.SpaceBetween
+                .fillMaxHeight()
+                .padding(end = 4.dp, top = 14.dp, bottom = 14.dp),
+            verticalArrangement = Arrangement.SpaceEvenly
         ) {
             val levels = listOf(
                 topValue,
+                topValue - (range * 0.15),
                 topValue - (range * 0.25),
+                topValue - (range * 0.35),
                 topValue - (range * 0.50),
+                topValue - (range * 0.65),
                 topValue - (range * 0.75),
+                topValue - (range * 0.85),
+                livePrice,
+                bidPrice,
                 bottomValue
-            )
+            ).filterNotNull().distinct()
             levels.forEach { level ->
                 Text(
                     formatPrice(level, pricePrecision),
-                    color = Color(0xFF7C7C7C),
+                    color = when {
+                        livePrice != null && kotlin.math.abs(level - livePrice) < 0.0000001 -> Color(0xFF2F80ED)
+                        bidPrice != null && kotlin.math.abs(level - bidPrice) < 0.0000001 -> Color(0xFFD64545)
+                        darkTheme -> Color(0xFFC9B08A)
+                        else -> Color(0xFF7C7C7C)
+                    },
                     fontSize = 10.sp
                 )
             }

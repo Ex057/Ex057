@@ -18,6 +18,7 @@ class AiPromptComposer(
             appendLine("Never guarantee outcomes or promise accuracy.")
             appendLine("Think like a discretionary trader: context -> bias -> setup -> trigger -> invalidation -> risk.")
             appendLine("Prioritize gold-specific drivers: session timing, dollar/real-yield pressure proxies, and breakout quality.")
+            appendLine("Explicitly reference ADX trend filter, EMA(20/200) alignment, ATR-based stop logic, and candlestick confirmations when present.")
             appendLine("Prefer concrete market structure language over generic finance text.")
             appendLine("Outside London or London-New York overlap, lower confidence unless momentum is exceptional.")
             appendLine("If evidence is weak, explicitly recommend wait/no trade and what must change.")
@@ -25,6 +26,7 @@ class AiPromptComposer(
             appendLine("Return valid JSON only with keys: title, summary, bullets, caution.")
             appendLine("bullets must be an array of 2 to 4 short strings.")
             appendLine("bullets must cover: (1) directional read, (2) setup/trigger, (3) invalidation or wait condition.")
+            appendLine("For MARKET_DEEP_DIVE also include an extra key named entry_object with strict keys: entry_tf, entry_type, entry_level, stop, target, no_trade_reason.")
         }
 
         val userPrompt = buildUserPrompt(request)
@@ -39,7 +41,7 @@ class AiPromptComposer(
         val context = request.context
         val task = when (request.action) {
             AiInsightQuickAction.MARKET_DEEP_DIVE ->
-                "Do an independent market read from the structured live market snapshot only. Do not reuse app confirmation labels. Build a trader-style read: regime context, directional bias (long/short/no trade/wait), setup quality, trigger condition, and invalidation condition. If multi-timeframe data conflicts, bias should default to wait/no trade."
+                "Do an independent market read from the structured live market snapshot only. Do not reuse app confirmation labels. Build a trader-style read: regime context, directional bias (long/short/no trade/wait), setup quality, trigger condition, and invalidation condition. Use explicit top-down flow: HTF bias -> MTF structure -> LTF trigger (1m/5m). If multi-timeframe data conflicts, bias should default to wait/no trade. Return entry_object with strict keys: entry_tf, entry_type, entry_level, stop, target, no_trade_reason."
             AiInsightQuickAction.EXPLAIN_SIGNAL ->
                 "Explain why the engine currently reads this setup this way. Prioritize top drivers, then the single most important trigger and invalidation condition."
             AiInsightQuickAction.EXPLAIN_RISK ->
@@ -90,6 +92,41 @@ class AiPromptComposer(
                         }
                     })
                 })
+                if (request.action == AiInsightQuickAction.MARKET_DEEP_DIVE) {
+                    put("gold_checks", context.deepDive?.goldChecks?.let {
+                        JSONObject()
+                            .put("adx14_h4", it.adx14H4)
+                            .put("ema20", it.ema20)
+                            .put("ema200", it.ema200)
+                            .put("atr14_h1", it.atr14H1)
+                            .put("price_above_200ema", it.priceAbove200Ema)
+                            .put("touches_20ema", it.touches20Ema)
+                            .put("h4_bull_engulfing", it.h4BullEngulfing)
+                            .put("h4_bear_engulfing", it.h4BearEngulfing)
+                            .put("m5_bull_engulfing", it.m5BullEngulfing)
+                            .put("m5_bear_engulfing", it.m5BearEngulfing)
+                            .put("belt_hold", it.beltHold)
+                            .put("long_line", it.longLine)
+                            .put("is_london_session", it.isLondonSession)
+                            .put("is_ny_overlap", it.isNyOverlap)
+                    } ?: JSONObject.NULL)
+                    put("top_down_block", context.deepDive?.topDown?.let {
+                        JSONObject()
+                            .put("htf_bias", it.htfBias)
+                            .put("mtf_structure", it.mtfStructure)
+                            .put("ltf_trigger", it.ltfTrigger)
+                            .put("invalidation", it.invalidation)
+                    } ?: JSONObject.NULL)
+                    put("entry_object_candidate", context.deepDive?.entryObject?.let {
+                        JSONObject()
+                            .put("entry_tf", it.entryTf)
+                            .put("entry_type", it.entryType)
+                            .put("entry_level", it.entryLevel ?: "")
+                            .put("stop", it.stop ?: "")
+                            .put("target", it.target ?: "")
+                            .put("no_trade_reason", it.noTradeReason ?: "")
+                    } ?: JSONObject.NULL)
+                }
                 if (request.action != AiInsightQuickAction.MARKET_DEEP_DIVE) {
                     put("mtfa", context.mtfa?.let {
                         JSONObject()

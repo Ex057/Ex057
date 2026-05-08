@@ -1,5 +1,6 @@
 package com.ex57.capital.analysis
 
+import com.ex57.capital.model.MarketCandle
 import kotlin.math.abs
 import java.time.Instant
 import java.time.ZoneOffset
@@ -63,6 +64,21 @@ internal object FeatureExtractor {
         val rsi = calculateRsi(prices, period = 14)
         val macdHistogram = calculateMacdHistogram(prices)
         val bollingerPosition = calculateBollingerPosition(prices)
+        val ema20 = calculateEma(prices, 20)
+        val ema200 = calculateEma(prices, 200)
+        val h1Candles = input.candleStack["1h"].orEmpty().ifEmpty { sourceCandles }
+        val h4Candles = input.candleStack["4h"].orEmpty().ifEmpty { sourceCandles }
+        val m5Candles = input.candleStack["5m"].orEmpty().ifEmpty { sourceCandles }
+        val atr14H1 = calculateAtr(h1Candles, 14).coerceAtLeast(averageStep * 1.1)
+        val adx14H4 = calculateAdxProxy(h4Candles, 14)
+        val priceAbove200Ema = last >= ema200
+        val touches20Ema = kotlin.math.abs(last - ema20) <= (averageStep * 0.8)
+        val h4BullEngulfing = hasBullishEngulfing(h4Candles)
+        val h4BearEngulfing = hasBearishEngulfing(h4Candles)
+        val m5BullEngulfing = hasBullishEngulfing(m5Candles)
+        val m5BearEngulfing = hasBearishEngulfing(m5Candles)
+        val beltHold = hasBeltHold(m5Candles)
+        val longLine = hasLongLine(m5Candles, atr14H1)
         val bullishIndicatorScore = listOf(
             AnalysisSupport.softScore(55.0 - rsi, 10.0, 0.0),
             AnalysisSupport.softScore(macdHistogram, averageStep * 0.9, averageStep * 0.15),
@@ -129,6 +145,18 @@ internal object FeatureExtractor {
             rsi = rsi,
             macdHistogram = macdHistogram,
             bollingerPosition = bollingerPosition,
+            ema20 = ema20,
+            ema200 = ema200,
+            atr14H1 = atr14H1,
+            adx14H4 = adx14H4,
+            priceAbove200Ema = priceAbove200Ema,
+            touches20Ema = touches20Ema,
+            h4BullEngulfing = h4BullEngulfing,
+            h4BearEngulfing = h4BearEngulfing,
+            m5BullEngulfing = m5BullEngulfing,
+            m5BearEngulfing = m5BearEngulfing,
+            beltHold = beltHold,
+            longLine = longLine,
             bullishIndicatorScore = bullishIndicatorScore,
             bearishIndicatorScore = bearishIndicatorScore,
             sessionContext = sessionContext
@@ -189,5 +217,70 @@ internal object FeatureExtractor {
         val variance = window.map { (it - mean) * (it - mean) }.average()
         val bandWidth = (kotlin.math.sqrt(variance) * 2.0).coerceAtLeast(mean * 0.0001)
         return ((window.last() - mean) / bandWidth).coerceIn(-2.0, 2.0)
+    }
+
+    private fun calculateEma(prices: List<Double>, period: Int): Double {
+        if (prices.isEmpty()) return 0.0
+        val alpha = 2.0 / (period + 1.0)
+        var ema = prices.first()
+        prices.drop(1).forEach { close ->
+            ema = (close * alpha) + (ema * (1.0 - alpha))
+        }
+        return ema
+    }
+
+    private fun calculateAtr(candles: List<MarketCandle>, period: Int): Double {
+        if (candles.size < 3) return 0.0
+        val trueRanges = candles.zipWithNext { prev, curr ->
+            maxOf(
+                curr.high - curr.low,
+                kotlin.math.abs(curr.high - prev.close),
+                kotlin.math.abs(curr.low - prev.close)
+            )
+        }
+        return trueRanges.takeLast(period).average()
+    }
+
+    private fun calculateAdxProxy(candles: List<MarketCandle>, period: Int): Double {
+        if (candles.size < period + 2) return 15.0
+        val moves = candles.zipWithNext { a, b -> b.close - a.close }.takeLast(period)
+        val directionalMove = kotlin.math.abs(moves.sum())
+        val volatility = moves.sumOf { kotlin.math.abs(it) }.coerceAtLeast(0.00001)
+        return ((directionalMove / volatility) * 100.0).coerceIn(0.0, 100.0)
+    }
+
+    private fun hasBullishEngulfing(candles: List<MarketCandle>): Boolean {
+        if (candles.size < 2) return false
+        val prev = candles[candles.lastIndex - 1]
+        val curr = candles.last()
+        return prev.close < prev.open &&
+            curr.close > curr.open &&
+            curr.open <= prev.close &&
+            curr.close >= prev.open
+    }
+
+    private fun hasBearishEngulfing(candles: List<MarketCandle>): Boolean {
+        if (candles.size < 2) return false
+        val prev = candles[candles.lastIndex - 1]
+        val curr = candles.last()
+        return prev.close > prev.open &&
+            curr.close < curr.open &&
+            curr.open >= prev.close &&
+            curr.close <= prev.open
+    }
+
+    private fun hasBeltHold(candles: List<MarketCandle>): Boolean {
+        val curr = candles.lastOrNull() ?: return false
+        val body = kotlin.math.abs(curr.close - curr.open)
+        val range = (curr.high - curr.low).coerceAtLeast(0.00001)
+        val openAtEdge = kotlin.math.abs(curr.open - curr.low) <= (range * 0.05) ||
+            kotlin.math.abs(curr.open - curr.high) <= (range * 0.05)
+        return openAtEdge && body >= (range * 0.65)
+    }
+
+    private fun hasLongLine(candles: List<MarketCandle>, atr: Double): Boolean {
+        val curr = candles.lastOrNull() ?: return false
+        val range = curr.high - curr.low
+        return range >= (atr * 0.85)
     }
 }

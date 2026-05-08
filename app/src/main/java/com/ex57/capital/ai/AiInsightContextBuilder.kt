@@ -118,6 +118,12 @@ object AiInsightContextBuilder {
                     realizedNetPnlUsd = realizedNetPnlUsd
                 )
             },
+            deepDive = buildDeepDiveSnapshot(
+                symbol = symbol,
+                candles = candles,
+                candleStack = candleStack,
+                livePrice = livePrice
+            ),
             openTrade = openTrade?.let { position ->
                 AiOpenTradeSnapshot(
                     side = position.side.label,
@@ -241,6 +247,19 @@ object AiInsightContextBuilder {
             append('|').append(context.tradePlan?.takeProfit)
             append('|').append(context.evidence?.heuristicSummary)
             append('|').append(context.evidence?.realizedSummary)
+            append('|').append(context.deepDive?.goldChecks?.adx14H4)
+            append('|').append(context.deepDive?.goldChecks?.ema20)
+            append('|').append(context.deepDive?.goldChecks?.ema200)
+            append('|').append(context.deepDive?.goldChecks?.atr14H1)
+            append('|').append(context.deepDive?.topDown?.htfBias)
+            append('|').append(context.deepDive?.topDown?.mtfStructure)
+            append('|').append(context.deepDive?.topDown?.ltfTrigger)
+            append('|').append(context.deepDive?.entryObject?.entryTf)
+            append('|').append(context.deepDive?.entryObject?.entryType)
+            append('|').append(context.deepDive?.entryObject?.entryLevel)
+            append('|').append(context.deepDive?.entryObject?.stop)
+            append('|').append(context.deepDive?.entryObject?.target)
+            append('|').append(context.deepDive?.entryObject?.noTradeReason)
             context.confirmations.forEach {
                 append('|').append(it.name).append(':').append(it.passed).append(':').append(it.details)
             }
@@ -337,6 +356,178 @@ object AiInsightContextBuilder {
             "1d" -> 7
             else -> 99
         }
+    }
+
+    private fun buildDeepDiveSnapshot(
+        symbol: TradingSymbol,
+        candles: List<MarketCandle>,
+        candleStack: Map<String, List<MarketCandle>>,
+        livePrice: Double?
+    ): AiDeepDiveSnapshot {
+        val h4 = candleStack["4h"].orEmpty().ifEmpty { candles }.takeLast(220)
+        val h1 = candleStack["1h"].orEmpty().ifEmpty { candles }.takeLast(220)
+        val m5 = candleStack["5m"].orEmpty().ifEmpty { candles }.takeLast(220)
+        val closes = candles.takeLast(220).map { it.close }
+        val price = livePrice ?: closes.lastOrNull() ?: 0.0
+        val ema20 = calculateEma(closes, 20)
+        val ema200 = calculateEma(closes, 200)
+        val atr14H1 = calculateAtr(h1, 14)
+        val adx14H4 = calculateAdxProxy(h4, 14)
+        val priceAbove200Ema = price >= ema200
+        val touches20Ema = kotlin.math.abs(price - ema20) <= ((atr14H1.coerceAtLeast(price * 0.0001)) * 0.25)
+        val h4Bull = hasBullishEngulfing(h4)
+        val h4Bear = hasBearishEngulfing(h4)
+        val m5Bull = hasBullishEngulfing(m5)
+        val m5Bear = hasBearishEngulfing(m5)
+        val beltHold = hasBeltHold(m5)
+        val longLine = hasLongLine(m5, atr14H1)
+        val hourUtc = Instant.now().atZone(ZoneId.of("UTC")).hour
+        val isLondon = hourUtc in 7..9
+        val isNyOverlap = hourUtc in 13..16
+        val htfBias = when {
+            adx14H4 > 25.0 && h4Bull && priceAbove200Ema -> "Bullish"
+            adx14H4 > 25.0 && h4Bear && !priceAbove200Ema -> "Bearish"
+            else -> "Neutral"
+        }
+        val mtfStructure = when {
+            priceAbove200Ema && closes.takeLast(20).average() > closes.takeLast(60).average() -> "Bullish structure"
+            !priceAbove200Ema && closes.takeLast(20).average() < closes.takeLast(60).average() -> "Bearish structure"
+            else -> "Mixed structure"
+        }
+        val ltfTrigger = when {
+            htfBias == "Bullish" && touches20Ema && (m5Bull || beltHold || longLine) -> "Long trigger armed on M5"
+            htfBias == "Bearish" && touches20Ema && (m5Bear || beltHold || longLine) -> "Short trigger armed on M5"
+            touches20Ema -> "EMA touch present, waiting for M5 pattern"
+            else -> "No low-timeframe trigger"
+        }
+        val entryType = when {
+            ltfTrigger.contains("Long trigger") -> "long"
+            ltfTrigger.contains("Short trigger") -> "short"
+            else -> "none"
+        }
+        val stopDist = (atr14H1 * 0.85).coerceAtLeast(price * 0.0012)
+        val entry = if (entryType == "none") null else price
+        val stop = when (entryType) {
+            "long" -> entry?.minus(stopDist)
+            "short" -> entry?.plus(stopDist)
+            else -> null
+        }
+        val target = when (entryType) {
+            "long" -> entry?.plus(stopDist * 2.67)
+            "short" -> entry?.minus(stopDist * 2.67)
+            else -> null
+        }
+        val noTradeReason = if (entryType == "none") {
+            when {
+                adx14H4 <= 25.0 -> "ADX filter below threshold"
+                !(isLondon || isNyOverlap) -> "Outside London/NY overlap session windows"
+                !touches20Ema -> "No EMA(20) touch trigger on lower timeframe"
+                else -> "Pattern confirmation missing on M5"
+            }
+        } else {
+            null
+        }
+        val invalidation = when (entryType) {
+            "long" -> "Invalid if price closes below ${formatPrice(stop, symbol.spec.pricePrecision) ?: "-"}"
+            "short" -> "Invalid if price closes above ${formatPrice(stop, symbol.spec.pricePrecision) ?: "-"}"
+            else -> noTradeReason ?: "No valid trigger"
+        }
+        return AiDeepDiveSnapshot(
+            goldChecks = AiGoldChecksSnapshot(
+                adx14H4 = adx14H4,
+                ema20 = ema20,
+                ema200 = ema200,
+                atr14H1 = atr14H1,
+                priceAbove200Ema = priceAbove200Ema,
+                touches20Ema = touches20Ema,
+                h4BullEngulfing = h4Bull,
+                h4BearEngulfing = h4Bear,
+                m5BullEngulfing = m5Bull,
+                m5BearEngulfing = m5Bear,
+                beltHold = beltHold,
+                longLine = longLine,
+                isLondonSession = isLondon,
+                isNyOverlap = isNyOverlap
+            ),
+            topDown = AiTopDownSnapshot(
+                htfBias = htfBias,
+                mtfStructure = mtfStructure,
+                ltfTrigger = ltfTrigger,
+                invalidation = invalidation
+            ),
+            entryObject = AiEntryObjectSnapshot(
+                entryTf = if (entryType == "none") "none" else "5m",
+                entryType = entryType,
+                entryLevel = formatPrice(entry, symbol.spec.pricePrecision),
+                stop = formatPrice(stop, symbol.spec.pricePrecision),
+                target = formatPrice(target, symbol.spec.pricePrecision),
+                noTradeReason = noTradeReason
+            )
+        )
+    }
+
+    private fun calculateEma(values: List<Double>, period: Int): Double {
+        if (values.isEmpty()) return 0.0
+        val alpha = 2.0 / (period + 1.0)
+        var ema = values.first()
+        values.drop(1).forEach { close ->
+            ema = (close * alpha) + (ema * (1.0 - alpha))
+        }
+        return ema
+    }
+
+    private fun calculateAtr(candles: List<MarketCandle>, period: Int): Double {
+        if (candles.size < 3) return 0.0
+        val trueRanges = candles.zipWithNext { prev: MarketCandle, curr: MarketCandle ->
+            maxOf(
+                curr.high - curr.low,
+                kotlin.math.abs(curr.high - prev.close),
+                kotlin.math.abs(curr.low - prev.close)
+            )
+        }
+        return trueRanges.takeLast(period).average()
+    }
+
+    private fun calculateAdxProxy(candles: List<MarketCandle>, period: Int): Double {
+        if (candles.size < period + 2) return 15.0
+        val moves = candles.zipWithNext { a: MarketCandle, b: MarketCandle -> b.close - a.close }.takeLast(period)
+        val directionalMove = kotlin.math.abs(moves.sum())
+        val volatility = moves.sumOf { kotlin.math.abs(it) }.coerceAtLeast(0.00001)
+        return ((directionalMove / volatility) * 100.0).coerceIn(0.0, 100.0)
+    }
+
+    private fun hasBullishEngulfing(candles: List<MarketCandle>): Boolean {
+        if (candles.size < 2) return false
+        val prev = candles[candles.lastIndex - 1]
+        val curr = candles.last()
+        return prev.close < prev.open &&
+            curr.close > curr.open &&
+            curr.open <= prev.close &&
+            curr.close >= prev.open
+    }
+
+    private fun hasBearishEngulfing(candles: List<MarketCandle>): Boolean {
+        if (candles.size < 2) return false
+        val prev = candles[candles.lastIndex - 1]
+        val curr = candles.last()
+        return prev.close > prev.open &&
+            curr.close < curr.open &&
+            curr.open >= prev.close &&
+            curr.close <= prev.open
+    }
+
+    private fun hasBeltHold(candles: List<MarketCandle>): Boolean {
+        val curr = candles.lastOrNull() ?: return false
+        val body = kotlin.math.abs(curr.close - curr.open)
+        val range = (curr.high - curr.low).coerceAtLeast(0.00001)
+        val openAtEdge = kotlin.math.abs(curr.open - curr.low) <= (range * 0.05) ||
+            kotlin.math.abs(curr.open - curr.high) <= (range * 0.05)
+        return openAtEdge && body >= (range * 0.65)
+    }
+
+    private fun hasLongLine(candles: List<MarketCandle>, atr: Double): Boolean {
+        val curr = candles.lastOrNull() ?: return false
+        return (curr.high - curr.low) >= (atr * 0.85)
     }
 
     private fun formatPrice(value: Double?, precision: Int = 5): String? = value?.let { "%.${precision}f".format(it) }

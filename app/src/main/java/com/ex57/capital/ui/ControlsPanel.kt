@@ -13,8 +13,6 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
@@ -35,6 +33,7 @@ import androidx.compose.ui.unit.sp
 import com.ex57.capital.model.ConfirmationMode
 import com.ex57.capital.model.SymbolTradingSpec
 import com.ex57.capital.model.TradingSymbol
+import com.ex57.capital.ui.components.LiquidGlassCard
 
 private fun symbolSpec(
     contractSize: Double,
@@ -89,6 +88,11 @@ private fun syntheticSpec(
 )
 
 val SupportedSymbols = listOf(
+    TradingSymbol("EURUSD", "Euro / US Dollar", "Forex", "frxEURUSD", spec = forexSpec(typicalSpread = 0.00010)),
+    TradingSymbol("GBPUSD", "British Pound / US Dollar", "Forex", "frxGBPUSD", spec = forexSpec(typicalSpread = 0.00015)),
+    TradingSymbol("USDJPY", "US Dollar / Japanese Yen", "Forex", "frxUSDJPY", spec = forexSpec(typicalSpread = 0.015, pricePrecision = 3, tickSize = 0.001)),
+    TradingSymbol("AUDUSD", "Australian Dollar / US Dollar", "Forex", "frxAUDUSD", spec = forexSpec(typicalSpread = 0.00012)),
+    TradingSymbol("USDCHF", "US Dollar / Swiss Franc", "Forex", "frxUSDCHF", spec = forexSpec(typicalSpread = 0.00016)),
     TradingSymbol(
         "XAUUSD",
         "Gold / US Dollar",
@@ -104,7 +108,43 @@ val SupportedSymbols = listOf(
             tickSize = 0.01,
             pricePrecision = 2
         )
-    )
+    ),
+    TradingSymbol(
+        "BTCUSD",
+        "Bitcoin / US Dollar",
+        "Crypto",
+        "cryBTCUSD",
+        spec = symbolSpec(
+            contractSize = 1.0,
+            minLot = 0.001,
+            maxLot = 5.0,
+            lotStep = 0.001,
+            typicalSpread = 30.0,
+            effectiveLeverage = 50.0,
+            tickSize = 0.01,
+            pricePrecision = 2
+        )
+    ),
+    TradingSymbol(
+        "ETHUSD",
+        "Ethereum / US Dollar",
+        "Crypto",
+        "cryETHUSD",
+        spec = symbolSpec(
+            contractSize = 1.0,
+            minLot = 0.001,
+            maxLot = 10.0,
+            lotStep = 0.001,
+            typicalSpread = 3.0,
+            effectiveLeverage = 50.0,
+            tickSize = 0.01,
+            pricePrecision = 2
+        )
+    ),
+    TradingSymbol("VOL10", "Volatility 10 Index", "Synthetic", "R_10", spec = syntheticSpec(minLot = 0.20, lotStep = 0.10, typicalSpread = 0.80)),
+    TradingSymbol("VOL50", "Volatility 50 Index", "Synthetic", "R_50", spec = syntheticSpec(minLot = 0.20, lotStep = 0.10, typicalSpread = 1.80)),
+    TradingSymbol("VOL75", "Volatility 75 Index", "Synthetic", "R_75", spec = syntheticSpec(minLot = 0.20, lotStep = 0.10, typicalSpread = 3.20)),
+    TradingSymbol("VOL100", "Volatility 100 Index", "Synthetic", "R_100", spec = syntheticSpec(minLot = 0.20, lotStep = 0.10, typicalSpread = 4.20))
 )
 
 val SupportedTimeframes = listOf("1m", "5m", "15m", "30m", "1h", "2h", "4h", "8h", "1d")
@@ -124,30 +164,32 @@ fun ControlsPanel(
     onRiskPercentInputChange: (String) -> Unit
 ) {
     val selectedCategory = selectedSymbol.category
+    val symbolsInCategory = remember(selectedCategory) {
+        SupportedSymbols.filter { it.category == selectedCategory }
+    }
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
-            contentColor = MaterialTheme.colorScheme.onSurface
-        )
-    ) {
+    LiquidGlassCard(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text("Trading Configuration", fontSize = 18.sp, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                OutlinedTextField(
+                DropdownField(
+                    label = "Category",
                     value = selectedCategory,
-                    onValueChange = {},
-                    enabled = false,
-                    label = { Text("Market") },
+                    options = SupportedCategories,
+                    onSelect = { category ->
+                        val firstSymbol = SupportedSymbols.first { it.category == category }
+                        onSymbolChange(firstSymbol)
+                    },
                     modifier = Modifier.weight(1f)
                 )
-                OutlinedTextField(
+                DropdownField(
+                    label = "Symbol",
                     value = selectedSymbol.code,
-                    onValueChange = {},
-                    enabled = false,
-                    label = { Text("Symbol") },
+                    options = symbolsInCategory.map { it.code },
+                    onSelect = { code ->
+                        onSymbolChange(symbolsInCategory.first { it.code == code })
+                    },
                     modifier = Modifier.weight(1f)
                 )
             }

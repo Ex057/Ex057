@@ -7,6 +7,7 @@ import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -15,24 +16,24 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 private val DarkColors = darkColorScheme(
-    primary = Color(0xFF00F2FE),
-    onPrimary = Color(0xFF001418),
-    primaryContainer = Color(0xFF082737),
-    onPrimaryContainer = Color(0xFFD2FAFF),
-    secondary = Color(0xFF2CEF9F),
-    onSecondary = Color(0xFF022114),
-    secondaryContainer = Color(0xFF113728),
-    onSecondaryContainer = Color(0xFFCFFAE7),
-    tertiary = Color(0xFFBFE9F7),
-    onTertiary = Color(0xFF04202A),
-    background = Color(0xFF050912),
-    onBackground = Color(0xFFF9FAFB),
-    surface = Color(0xFF101828),
-    onSurface = Color(0xFFF9FAFB),
-    surfaceVariant = Color(0xFF1A2335),
-    onSurfaceVariant = Color(0xFFAFC6D8),
-    outline = Color(0xFF2F4D64),
-    error = Color(0xFFFF6B81),
+    primary = Color(0xFFC5A059),
+    onPrimary = Color(0xFF1A1306),
+    primaryContainer = Color(0xFF3A2C12),
+    onPrimaryContainer = Color(0xFFF3E2BB),
+    secondary = Color(0xFFDAA520),
+    onSecondary = Color(0xFF1B1405),
+    secondaryContainer = Color(0xFF3D2F12),
+    onSecondaryContainer = Color(0xFFF7E3B0),
+    tertiary = Color(0xFFE6D2A3),
+    onTertiary = Color(0xFF251A07),
+    background = Color(0xFF121212),
+    onBackground = Color(0xFFEDEDED),
+    surface = Color(0xFF1F1F1F),
+    onSurface = Color(0xFFEDEDED),
+    surfaceVariant = Color(0xFF2A2620),
+    onSurfaceVariant = Color(0xFFC9B99B),
+    outline = Color(0xFF6D5A3A),
+    error = Color(0xFFFF5C5C),
     onError = Color(0xFF2D020B)
 )
 
@@ -60,13 +61,13 @@ private val LightColors = lightColorScheme(
 
 private val AppTypography = Typography(
     headlineLarge = TextStyle(
-        fontFamily = FontFamily.Serif,
+        fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Bold,
         fontSize = 34.sp,
         lineHeight = 38.sp
     ),
     headlineMedium = TextStyle(
-        fontFamily = FontFamily.Serif,
+        fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Bold,
         fontSize = 28.sp,
         lineHeight = 32.sp
@@ -99,10 +100,21 @@ private val AppTypography = Typography(
 )
 
 private val AppShapes = Shapes(
-    small = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
-    medium = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
-    large = androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
+    small = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+    medium = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
+    large = androidx.compose.foundation.shape.RoundedCornerShape(24.dp)
 )
+
+@Immutable
+data class AppStatusPalette(
+    val accentTeal: Color = Color(0xFFC5A059),
+    val success: Color = Color(0xFF2CEF9F),
+    val warning: Color = Color(0xFFFF7066),
+    val danger: Color = Color(0xFFFF5C5C),
+    val textPrimary: Color = Color(0xFFF9FAFB)
+)
+
+val StatusPalette = AppStatusPalette()
 
 enum class AppThemeMode(val label: String) {
     SYSTEM("System"),

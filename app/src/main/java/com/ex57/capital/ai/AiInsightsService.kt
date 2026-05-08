@@ -84,6 +84,7 @@ class MockAiInsightsService : AiProviderService {
         val signal = request.context.signal
         val evidence = request.context.evidence
         val market = request.context.market
+        val deepDive = request.context.deepDive
         val symbol = request.context.symbolCode
         val timeframe = request.context.timeframe
         val directionalRead = deriveDirectionalRead(market.shortTrend, market.momentumLabel, market.structureLabel)
@@ -103,7 +104,7 @@ class MockAiInsightsService : AiProviderService {
                 "$directionalRead Setup quality: $setupRead",
                 triggerRead,
                 invalidationRead,
-                "Levels: support ${market.nearestSupport ?: "-"}, resistance ${market.nearestResistance ?: "-"}; volatility ${market.volatilityLabel.lowercase()}."
+                "ENTRY_OBJECT {\"entry_tf\":\"${deepDive?.entryObject?.entryTf ?: "none"}\",\"entry_type\":\"${deepDive?.entryObject?.entryType ?: "none"}\",\"entry_level\":\"${deepDive?.entryObject?.entryLevel ?: ""}\",\"stop\":\"${deepDive?.entryObject?.stop ?: ""}\",\"target\":\"${deepDive?.entryObject?.target ?: ""}\",\"no_trade_reason\":\"${deepDive?.entryObject?.noTradeReason ?: ""}\"}"
             )
             AiInsightQuickAction.EXPLAIN_SIGNAL -> listOf(
                 "Bias ${signal?.bias?.lowercase() ?: "unavailable"} at ${signal?.confidence ?: 0}%: this is driven by current structure + momentum alignment on $timeframe.",
@@ -424,6 +425,8 @@ private fun parseStructuredPayload(rawText: String, action: AiInsightQuickAction
     val cleaned = rawText.trim()
     return runCatching {
         val json = JSONObject(cleaned)
+        val cautionBase = json.optString("caution").ifBlank { "This insight is supportive analysis only, not a guarantee." }
+        val entryObjectNote = json.optJSONObject("entry_object")?.let { " entry_object=${it.toString()}" } ?: ""
         AiInsightParsedPayload(
             title = json.optString("title").ifBlank { action.label },
             summary = json.optString("summary").ifBlank { "No summary returned." },
@@ -435,7 +438,7 @@ private fun parseStructuredPayload(rawText: String, action: AiInsightQuickAction
                     }
                 }
             }?.take(4)?.ifEmpty { listOf("No bullets returned.") } ?: listOf("No bullets returned."),
-            caution = json.optString("caution").ifBlank { "This insight is supportive analysis only, not a guarantee." }
+            caution = cautionBase + entryObjectNote
         )
     }.getOrElse {
         AiInsightParsedPayload(

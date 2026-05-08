@@ -31,6 +31,7 @@ data class AiInsightContext(
     val tradePlan: AiTradePlanSnapshot?,
     val confirmations: List<AiConfirmationSnapshot>,
     val evidence: AiEvidenceSnapshot?,
+    val deepDive: AiDeepDiveSnapshot?,
     val openTrade: AiOpenTradeSnapshot?,
     val recentTrades: List<AiRecentTradeSnapshot>
 )
@@ -58,6 +59,45 @@ data class AiMarketTimeframeSnapshot(
     val changePercent: String,
     val lastClose: String?,
     val recentOhlc: List<String> = emptyList()
+)
+
+data class AiDeepDiveSnapshot(
+    val goldChecks: AiGoldChecksSnapshot,
+    val topDown: AiTopDownSnapshot,
+    val entryObject: AiEntryObjectSnapshot
+)
+
+data class AiGoldChecksSnapshot(
+    val adx14H4: Double,
+    val ema20: Double,
+    val ema200: Double,
+    val atr14H1: Double,
+    val priceAbove200Ema: Boolean,
+    val touches20Ema: Boolean,
+    val h4BullEngulfing: Boolean,
+    val h4BearEngulfing: Boolean,
+    val m5BullEngulfing: Boolean,
+    val m5BearEngulfing: Boolean,
+    val beltHold: Boolean,
+    val longLine: Boolean,
+    val isLondonSession: Boolean,
+    val isNyOverlap: Boolean
+)
+
+data class AiTopDownSnapshot(
+    val htfBias: String,
+    val mtfStructure: String,
+    val ltfTrigger: String,
+    val invalidation: String
+)
+
+data class AiEntryObjectSnapshot(
+    val entryTf: String,
+    val entryType: String,
+    val entryLevel: String?,
+    val stop: String?,
+    val target: String?,
+    val noTradeReason: String?
 )
 
 data class AiMtfaSnapshot(
